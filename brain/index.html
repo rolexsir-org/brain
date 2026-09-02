@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0e131f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Brain">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<title>Brain</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <div class="mark">🧠</div>
+      <div>
+        <h1 id="title">Brain</h1>
+        <div class="sub"><i class="idot"></i> <span>private · on this device</span></div>
+      </div>
+    </div>
+    <button class="iconbtn" id="installBtn" title="Install" hidden aria-hidden="true">⬇️</button>
+    <button class="iconbtn" id="menuBtn" title="Menu" aria-label="Open menu">☰</button>
+  </header>
+
+  <main id="chat" aria-live="polite" role="log"></main>
+
+  <div id="composer">
+    <div class="suggests" id="suggests"></div>
+    <div class="bar">
+      <textarea id="in" rows="1" placeholder="Message Brain… e.g. “remind me to call mom at 7pm”" enterkeyhint="send"></textarea>
+      <button class="rbtn" id="mic" title="Voice input" aria-label="Voice input">🎤</button>
+      <button id="send" title="Send" aria-label="Send">➤</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="panel">
+    <div class="grip"></div>
+    <div class="phead"><h2 id="sheetTitle">Menu</h2><button class="xbtn" id="sheetClose" aria-label="Close">×</button></div>
+    <div class="pbody" id="sheetBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

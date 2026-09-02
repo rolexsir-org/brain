@@ -1,0 +1,15 @@
+{
+  "name": "brain",
+  "version": "2.0.0",
+  "description": "Brain — a private, offline, natural-language personal assistant PWA",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node build/icons.mjs && node build/build.mjs"
+  },
+  "dependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1"
+  }
+}
