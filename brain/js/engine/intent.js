@@ -11,7 +11,11 @@ import * as D from '../util/date.js';
 import { parseRecur, resolveMoment, timeFromText } from '../util/date.js';
 import { parseNum, cleanName, todayKey, normStr } from '../util/util.js';
 
-function reply(text, cards, run) { return { text, cards: cards || [], run: run || null }; }
+function reply(text, cards, run, actions) { return { text, cards: cards || [], run: run || null, actions: actions || [] }; }
+function saveFailure(result, item = 'that item') {
+  if (result && !result.error) return null;
+  return reply(result && result.error ? result.error : `Couldn’t save ${item}. Your device storage may be full.`);
+}
 
 // ---------- external / device actions ----------
 // The engine stays pure: it resolves the *target* and returns a `run` request
@@ -58,6 +62,15 @@ export class Brain {
         return this._finishReminder(this.ctx.pending.params, when);
       }
     }
+    if (this.ctx.pending && this.ctx.pending.kind === 'event_time') {
+      if (!/^(remind me|add task|schedule|add event|create event|note|remember|spent|delete|show|what)/.test(low)) {
+        return this._finishEvent(this.ctx.pending.params, t);
+      }
+    }
+
+    // ---- A typed answer to an ambiguous external-action choice ----
+    const pendingExternal = this._finishExternalChoice(low, t);
+    if (pendingExternal) return pendingExternal;
 
     // ---- Simple meta / smalltalk ----
     const meta = this._meta(low, t);
@@ -112,182 +125,332 @@ Journal — “I felt great today”
 Search & questions — “what's coming up?”, “how much did I spend this month?”, “show everything about John”, “who owes me?”`);
   }
 
-  /** Find people matching a loose contact token (name, phone, email, alias). */
-  _findPeople(token) {
-    const s = this.store;
-    const q = normStr(token);
-    const isNum = /^\+?[\d\s().-]{7,}$/.test(String(token || '').trim());
-    const out = [];
-    for (const p of s.list('person')) {
-      if (!p) continue;
-      if (normStr(p.name) === q) { out.unshift(p); continue; }
-      const hays = normStr(p.name + ' ' + (p.phone || '') + ' ' + (p.email || '') + ' ' + (p.relationship || ''));
-      if (hays.includes(q) && q.length >= 2) out.push(p);
-      else if (isNum && normStr(p.phone).replace(/\s/g, '') === q) out.push(p);
+  /** Find people by name, alias, number, email, relationship, or username. */
+  _findPeople(token, onlyIds = null) {
+    const query = normStr(token);
+    const digits = String(token || '').replace(/\D/g, '');
+    const email = String(token || '').trim().toLowerCase();
+    if (!query && !digits) return [];
+    const allowed = onlyIds ? new Set(onlyIds) : null;
+    const exact = [];
+    const partial = [];
+    for (const person of this.store.list('person')) {
+      if (!person || (allowed && !allowed.has(person.id))) continue;
+      const aliases = Array.isArray(person.aliases) ? person.aliases : [];
+      const values = [person.name, ...aliases, person.relationship, person.instagram].filter(Boolean);
+      const personDigits = String(person.phone || '').replace(/\D/g, '');
+      const personEmail = String(person.email || '').trim().toLowerCase();
+      const exactMatch = values.some(value => normStr(value) === query)
+        || (!!digits && digits.length >= 7 && personDigits === digits)
+        || (!!email && personEmail === email);
+      if (exactMatch) { exact.push(person); continue; }
+      const haystack = values.map(normStr).join(' ');
+      if ((query.length >= 2 && haystack.includes(query)) || (!!digits && digits.length >= 4 && personDigits.includes(digits)) || (!!email && personEmail.includes(email))) partial.push(person);
     }
-    // dedupe by id, prefer name-first match
-    const seen = new Set(); const uniq = [];
-    for (const p of out) if (!seen.has(p.id)) { seen.add(p.id); uniq.push(p); }
-    return uniq;
+    return [...exact, ...partial];
   }
 
-  /** Human summary of an external launch request to show above the action. */
-  _describeAction(id, who) {
-    const nm = who ? (who.name || who) : '';
-    switch (id) {
-      case 'call': return `Calling ${nm}…`;
-      case 'sms': return `Preparing a message to ${nm}…`;
-      case 'whatsapp': return `Opening WhatsApp for ${nm}…`;
-      case 'email': return `Preparing an email to ${nm}…`;
-      case 'maps': return `Opening the map for ${nm}…`;
-      default: return '';
+  _actionForPerson(action, person, extras = {}) {
+    const name = person.name || 'this person';
+    const phone = person.phone || '';
+    if (action === 'call') {
+      if (!phone) return reply(`I know ${name}, but do not have a phone number for them.`);
+      this.ctx.push('person', person.id, name);
+      return reply(`Ready to call ${name}.`, [], { id: 'call', label: `📞 Call ${name}`, args: { number: phone } });
     }
+    if (action === 'sms') {
+      if (!phone) return reply(`I know ${name}, but do not have a phone number for them.`);
+      this.ctx.push('person', person.id, name);
+      return reply(`Your phone will open a message composer for ${name}.`, [], { id: 'sms', label: `💬 Text ${name}`, args: { number: phone, body: extras.body || '' } });
+    }
+    if (action === 'whatsapp') {
+      if (!phone) return reply(`I know ${name}, but WhatsApp needs a phone number for a direct chat.`);
+      this.ctx.push('person', person.id, name);
+      const direct = phone.trim().startsWith('+') || !!this.store.settings.countryCode;
+      return reply(direct ? `WhatsApp will open ${name}'s chat. Review and send there.` : `I can open WhatsApp’s share page, but this saved number has no country code. Choose a recipient there, or add a country code in Settings for a direct chat.`, [], {
+        id: 'whatsapp', label: `🟢 WhatsApp ${name}`, args: { number: phone, text: extras.body || '', countryCode: this.store.settings.countryCode || '', allowShareFallback: true }
+      });
+    }
+    if (action === 'email') {
+      if (!person.email) return reply(`I know ${name}, but do not have an email address for them.`);
+      this.ctx.push('person', person.id, name);
+      return reply(`Your mail app will open a draft for ${name}.`, [], {
+        id: 'email', label: `✉️ Email ${name}`, args: { email: person.email, subject: extras.subject || '', body: extras.body || '' }
+      });
+    }
+    if (action === 'maps') {
+      if (!person.address) return reply(`I know ${name}, but do not have an address for them.`);
+      this.ctx.push('person', person.id, name);
+      return reply(`Directions to ${name}'s saved address are ready.`, [], {
+        id: 'maps', label: `📍 Navigate to ${name}`, args: { query: person.address, directions: true }
+      });
+    }
+    if (action === 'instagram') {
+      if (!person.instagram) return reply(`I know ${name}, but do not have their Instagram handle. Add it to their contact first.`);
+      this.ctx.push('person', person.id, name);
+      return reply(`Opening ${name}'s Instagram profile.`, [], {
+        id: 'open', label: `📸 Open ${name}'s Instagram`, args: { url: `https://www.instagram.com/${String(person.instagram).replace(/^@/, '')}/` }
+      });
+    }
+    return null;
   }
 
-  _externalAction(low, t) {
-    const s = this.store;
+  _askExternalChoice(action, people, extras = {}) {
+    const candidates = people.slice(0, 6);
+    this.ctx.setPending('external_action', { action, candidateIds: candidates.map(person => person.id), extras }, 'Which person?');
+    const choices = candidates.map(person => ({
+      label: person.name || 'Unnamed contact',
+      // Instagram is resolved as an `open` handoff; there is deliberately no
+      // synthetic Instagram executor or browser-side automation.
+      id: action === 'instagram' ? 'open' : action,
+      clearPending: true,
+      args: action === 'maps' ? { query: person.address, directions: true }
+        : action === 'email' ? { email: person.email, subject: extras.subject || '', body: extras.body || '' }
+          : action === 'call' || action === 'sms' || action === 'whatsapp' ? { number: person.phone, body: extras.body || '', text: extras.body || '', countryCode: this.store.settings.countryCode || '', ...(action === 'whatsapp' ? { allowShareFallback: true } : {}) }
+            : { url: person.instagram ? `https://www.instagram.com/${String(person.instagram).replace(/^@/, '')}/` : '' }
+    })).filter(choice => !!choice.args.number || !!choice.args.email || !!choice.args.query || !!choice.args.url);
+    return reply(`Which ${candidates[0].name ? candidates[0].name.split(' ')[0] : 'person'}?`, candidates.map(person => ({ kind: 'person', id: person.id })), null, choices);
+  }
 
-    // ---- Call ----
-    let m = t.match(/^(?:call|ring|dial|phone|ring up)\s+(?:up\s+|my\s+)?(.+?)\s*$/i);
-    // but not "remind me to call"/"remember to call"/"task to call" (those are creates)
-    const isPlainImperative = /^(call|ring|dial|phone)\b/.test(low) && !/^(remind|remember|task|to-d?o)\b/.test(low);
-    if (m && isPlainImperative) {
-      const who = m[1].replace(/[?!.]+$/, '').trim();
-      // If it looks like a scheduled "call X at time/date", that's a reminder-style
-      // request, not an immediate dial.
-      if (/\b(at|by|tonight|tomorrow|today|this|next|soon|\d|am|pm)\b/i.test(who)) return null;
-      const direct = who.replace(/[^\d+]/g, '');
-      if (/^\+?[\d]{7,}$/.test(direct)) {
-        this.ctx.push('person', null, who);
-        return reply(this._describeAction('call', who), [], { id: 'call', label: '📞 Call ' + who, args: { number: direct } });
-      }
-      const found = this._findPeople(who);
-      if (found.length === 1 && found[0].phone) {
-        const p = found[0]; this.ctx.push('person', p.id, p.name);
-        return reply(this._describeAction('call', p.name), [], { id: 'call', label: '📞 Call ' + p.name, args: { number: p.phone } });
-      }
-      if (found.length > 1) return reply(`Which ${found[0].name.split(' ')[0]}? I found several:`, found.map(p => ({ kind: 'person', id: p.id })));
-      if (found.length === 1 && !found[0].phone) return reply(`I know ${found[0].name} but don’t have their number yet. Say “${found[0].name.split(' ')[0]}’s number is 98…” to add it.`);
-      return reply(`I don’t know who “${who}” is. Add them first, e.g. “John’s number is 9876500001”.`);
+  _finishExternalChoice(low, text) {
+    const pending = this.ctx.pending;
+    if (!pending || pending.kind !== 'external_action') return null;
+    if (/^(cancel|never mind|nevermind|stop|no)\b/.test(low)) {
+      this.ctx.clearPending();
+      return reply('Okay, cancelled.');
+    }
+    const params = pending.params || {};
+    const candidates = this._findPeople(text, params.candidateIds || []);
+    let selected = null;
+    const number = /^\s*(\d+)\s*$/.exec(text);
+    if (number && params.candidateIds && params.candidateIds[+number[1] - 1]) selected = this.store.get('person', params.candidateIds[+number[1] - 1]);
+    else if (candidates.length === 1) selected = candidates[0];
+    if (selected) {
+      this.ctx.clearPending();
+      return this._actionForPerson(params.action, selected, params.extras || {});
+    }
+    // A new command should be allowed to supersede the question.
+    if (/^(call|text|sms|message|whatsapp|email|mail|navigate|open|share|add|remind)\b/.test(low)) {
+      this.ctx.clearPending();
+      return null;
+    }
+    if (candidates.length > 1) return this._askExternalChoice(params.action, candidates, params.extras || {});
+    return reply('Please choose one of the contacts shown, type their full name, or say “cancel”.');
+  }
+
+  _resolvePersonAction(action, target, extras = {}) {
+    const directNumber = String(target || '').replace(/[^\d+]/g, '');
+    if ((action === 'call' || action === 'sms' || action === 'whatsapp') && /^\+?\d{7,15}$/.test(directNumber)) {
+      const labels = { call: '📞 Call', sms: '💬 Text', whatsapp: '🟢 WhatsApp' };
+      const directWhatsApp = directNumber.startsWith('+') || !!this.store.settings.countryCode;
+      const message = action === 'whatsapp'
+        ? (directWhatsApp ? `WhatsApp will open a chat for ${directNumber}. Review and send there.` : 'WhatsApp’s share page will open. Choose a recipient there, or add a country code in Settings for a direct chat.')
+        : action === 'call' ? `Ready to call ${directNumber}.` : `Your phone will open a message composer for ${directNumber}.`;
+      return reply(message, [], {
+        id: action, label: `${labels[action]} ${directNumber}`,
+        args: { number: directNumber, body: extras.body || '', text: extras.body || '', countryCode: this.store.settings.countryCode || '', ...(action === 'whatsapp' ? { allowShareFallback: true } : {}) }
+      });
+    }
+    const people = this._findPeople(target);
+    if (people.length === 1) return this._actionForPerson(action, people[0], extras);
+    if (people.length > 1) return this._askExternalChoice(action, people, extras);
+    const noun = action === 'maps' ? 'saved address' : action === 'email' ? 'email address' : action === 'instagram' ? 'Instagram handle' : 'contact';
+    return reply(`I could not find a ${noun} for “${target}”. Save the person in Brain first.`);
+  }
+
+  _lastRecord(preferred = null) {
+    const ref = preferred ? this.ctx.last.find(item => item.type === preferred) : this.ctx.last[0];
+    return ref ? { ref, record: this.store.get(ref.type, ref.id) } : { ref: null, record: null };
+  }
+
+  _lastDatedRecord() {
+    for (const ref of this.ctx.last) {
+      const record = this.store.get(ref.type, ref.id);
+      if (record && (record.at || record.due)) return { ref, record };
+    }
+    return { ref: null, record: null };
+  }
+
+  /** Build an explicit system-share payload, preserving a local photo file when one exists. */
+  _sharePayload(record) {
+    if (!record) return { title: 'Brain', text: '' };
+    const photoId = record.type === 'photo' ? record.id : record.type === 'journal' ? record.photoId : null;
+    const title = record.title || record.name || (record.type === 'journal' ? 'Journal entry' : 'Brain');
+    const text = record.type === 'photo' ? 'Photo from Brain' : (record.body || record.text || record.title || record.name || '');
+    return { title, text, ...(photoId ? { photoId } : {}) };
+  }
+
+  _externalAction(low, text) {
+    const store = this.store;
+    let match;
+
+    // Photos and contacts need a browser picker, so return a user-tappable action.
+    if (/^(?:add|attach|choose|pick|upload)\b.*\b(?:photo|image|picture)\b/i.test(text)) {
+      const attachTo = /\bjournal\b/i.test(text) ? 'journal' : '';
+      return reply(attachTo ? 'Choose a photo to save with your journal.' : 'Choose a photo from this device.', [], {
+        id: 'photoPick', label: '📷 Choose photo', args: { attachTo }
+      });
+    }
+    if (/^(?:take|capture)\b.*\b(?:photo|picture|image)\b/i.test(text)) {
+      const attachTo = /\bjournal\b/i.test(text) ? 'journal' : '';
+      return reply('Open your camera to take a photo.', [], { id: 'cameraPick', label: '📸 Take photo', args: { attachTo } });
+    }
+    if (/^(?:import|pick|choose)\s+(?:my |device )?contacts?\b/i.test(text)) {
+      return reply('Choose device contacts to copy into Brain. Brain cannot write to your system contacts.', [], { id: 'contactPick', label: '👤 Choose contacts', args: {} });
     }
 
-    // ---- Text / SMS ----
-    m = t.match(/^(?:text|sms|message)\s+(.+?)(?:\s+(?:that|saying|the message|:\s*))?\s*(.+)?$/i);
-    if (m && /^(text|sms|message)\b/.test(low)) {
-      const who = m[1].replace(/[?!.]+$/, '').trim();
-      const body = (m[2] || '').replace(/["“”']/g, '').trim();
-      const direct = who.replace(/[^\d+]/g, '');
-      if (/^\+?[\d]{7,}$/.test(direct)) {
-        return reply(this._describeAction('sms', who), [], { id: 'sms', label: '💬 Text ' + who, args: { number: direct, body } });
-      }
-      const found = this._findPeople(who);
-      if (found.length === 1 && found[0].phone) return reply(this._describeAction('sms', found[0].name), [], { id: 'sms', label: '💬 Text ' + found[0].name, args: { number: found[0].phone, body } });
-      if (found.length > 1) return reply(`Which ${found[0].name.split(' ')[0]}?`, found.map(p => ({ kind: 'person', id: p.id })));
-      if (found.length === 1) return reply(`No number for ${found[0].name} yet — add it first.`);
-      return reply(`I don’t have a contact matching “${who}”.`);
+    // Immediate phone actions. Scheduled wording falls through to a task/reminder.
+    match = text.match(/^(?:call|ring|dial|phone)\s+(?:up\s+)?(.+?)\s*[?!.]?$/i);
+    if (match && !/\b(?:tomorrow|today|tonight|at\s+\d|by\s+\d|next\s)\b/i.test(match[1])) return this._resolvePersonAction('call', match[1].trim());
+
+    // WhatsApp has to be checked before generic "message".
+    match = text.match(/^(?:whatsapp(?:\s+message)?|wa|message\s+(?:.+\s+)?on\s+whatsapp)\s+(.+)$/i);
+    if (match) {
+      const parsed = splitRecipientMessage(match[1], this._findPeople.bind(this));
+      return this._resolvePersonAction('whatsapp', parsed.target, { body: parsed.message });
+    }
+    match = text.match(/^(?:text|sms|message)\s+(.+)$/i);
+    if (match && !/\bon\s+whatsapp\b/i.test(match[1])) {
+      const parsed = splitRecipientMessage(match[1], this._findPeople.bind(this));
+      return this._resolvePersonAction('sms', parsed.target, { body: parsed.message });
     }
 
-    // ---- WhatsApp ----
-    m = t.match(/^(?:whatsapp|whatsapp\s+message|message\s+on\s+whatsapp|wa)\s+(.+?)(?:\s+(?:that|saying)\s+)?(.*)$/i);
-    if (m && /^(whatsapp|message .*whatsapp|wa)\b/.test(low) && !/^(remind|remember)\b/.test(low)) {
-      const who = m[1].replace(/[?!.]+$/, '').trim();
-      const body = (m[2] || '').replace(/["“”']/g, '').trim();
-      const direct = who.replace(/[^\d+]/g, '');
-      if (/^\+?[\d]{7,}$/.test(direct)) return reply(this._describeAction('whatsapp', who), [], { id: 'whatsapp', label: '🟢 WhatsApp ' + who, args: { number: direct, text: body } });
-      const found = this._findPeople(who);
-      if (found.length === 1 && found[0].phone) return reply(this._describeAction('whatsapp', found[0].name), [], { id: 'whatsapp', label: '🟢 WhatsApp ' + found[0].name, args: { number: found[0].phone, text: body } });
-      if (found.length > 1) return reply(`Which ${found[0].name.split(' ')[0]}?`, found.map(p => ({ kind: 'person', id: p.id })));
-      if (found.length === 1) return reply(`No number for ${found[0].name}, and WhatsApp needs a number. Add it first.`);
-      // No number at all → compose-on-web share link (honest fallback)
-      return reply('I can open WhatsApp to compose a message to that contact.', [], { id: 'whatsapp', label: '🟢 WhatsApp', args: { number: null, text: body } });
+    match = text.match(/^(?:email|e-?mail|mail)\s+(.+)$/i);
+    if (match) {
+      const parsed = splitRecipientMessage(match[1], this._findPeople.bind(this));
+      const target = parsed.target;
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target)) {
+        return reply('Your mail app will open a draft. Sending remains your choice.', [], {
+          id: 'email', label: '✉️ Email', args: { email: target, subject: parsed.message, body: parsed.message }
+        });
+      }
+      return this._resolvePersonAction('email', target, { subject: parsed.message, body: parsed.message });
     }
 
-    // ---- Email ----
-    m = t.match(/^(?:email|e-?mail|mail)\s+(.+?)(?:\s+(?:about|the|that|re:)\s+)?(.*)$/i);
-    if (m && /^(email|mail)\b/.test(low)) {
-      let who = m[1].replace(/[?!.]+$/, '').trim();
-      let extra = m[2] || '';
-      if (/^[\w.+-]+@[\w-]+\.[\w.]+$/.test(who)) {
-        return reply('Preparing an email…', [], { id: 'email', label: '✉️ Email', args: { email: who, subject: '', body: extra } });
-      }
-      // who may be "Sarah the project update" → name=Sarah, rest=subject
-      const nameMatch = who.match(/^([a-z][a-z .'-]+?)\s+(?:the\s+)?(.+)$/i);
-      const name = nameMatch ? nameMatch[1].trim() : who;
-      const subj = nameMatch ? nameMatch[2].trim() : extra;
-      const found = this._findPeople(name);
-      if (found.length === 1 && found[0].email) return reply(this._describeAction('email', found[0].name), [], { id: 'email', label: '✉️ Email ' + found[0].name, args: { email: found[0].email, subject: subj, body: '' } });
-      if (found.length > 1) return reply(`Which ${found[0].name.split(' ')[0]}?`, found.map(p => ({ kind: 'person', id: p.id })));
-      if (found.length === 1) return reply(`No email for ${found[0].name} yet — add it first.`);
-      return reply(`I don’t know ${name}’s email. Save it first, e.g. “${name}’s email is x@y.com”.`);
+    // Addresses are handed to Maps; no background location is claimed.
+    match = text.match(/^(?:navigate|get directions|route|take me|go to)\s+(?:to\s+)?(.+)$/i);
+    if (match) {
+      let target = match[1].trim().replace(/[?!.]+$/, '').replace(/(?:['’]s\s+)?(?:house|home|place)$/i, '').trim();
+      if (/^(?:my\s+)?(?:current\s+)?location$/i.test(target)) return reply('Brain can request your current location once, then open it in Maps.', [], { id: 'location.current', label: '📍 Open my location', args: {} });
+      const people = this._findPeople(target);
+      if (people.length || /\b(?:john|sarah|mom|dad)\b/i.test(target)) return this._resolvePersonAction('maps', target);
+      return reply(`Directions to “${target}” are ready.`, [], { id: 'maps', label: `📍 Navigate`, args: { query: target, directions: true } });
+    }
+    match = text.match(/^(?:open|show)\s+(?:this\s+)?location\b/i);
+    if (match) {
+      const last = this._lastRecord();
+      const record = last.record;
+      const query = record && (record.address || record.location);
+      if (query) return reply('Opening the saved location in Maps.', [], { id: 'maps', label: '📍 Open location', args: { query, directions: true } });
+      return reply('I do not have a saved location in the current context. Say “navigate to 12 Market Road” or save an address on a person.');
+    }
+    match = text.match(/^(?:open|show)\s+(?:in\s+)?maps?\s+(?:for|to)?\s*(.+)$/i);
+    if (match && match[1]) return reply('Opening Maps.', [], { id: 'maps', label: '📍 Open Maps', args: { query: match[1].trim(), directions: /directions|navigate/i.test(low) } });
+
+    // A web page cannot publish or automate Instagram. Keep that limitation
+    // distinct from both a legitimate profile open and the system share sheet.
+    if (/(?:\b(?:automate|post|publish|upload)\b.*\b(?:to|on)?\s*(?:instagram|insta)\b|\b(?:instagram|insta)\b.*\b(?:automate|post|publish|upload)\b)/i.test(text)) {
+      return reply('Brain cannot post to or automate Instagram from a browser. You can open a profile, or use Share to choose Instagram yourself when your device offers it.');
     }
 
-    // ---- Maps / navigate ----
-    m = t.match(/(?:navigate|get directions|route|take me|open in maps|go to)\s+(?:to\s+)?(?:the\s+)?(.*?)(?:\s*$)/i);
-    if (m && /navigate|directions|route|maps|take me|go to/.test(low)) {
-      const place = m[1].replace(/[?!.]+$/, '').trim();
-      if (place) {
-        const found = this._findPeople(place);
-        if (found.length === 1 && found[0].address) return reply(this._describeAction('maps', found[0].name), [], { id: 'maps', label: '📍 Navigate to ' + found[0].name, args: { query: found[0].address } });
-        if (found.length === 1 && !found[0].address) return reply(`I know ${found[0].name} but not their address. Say “${found[0].name.split(' ')[0]} lives at …” to add it.`);
-        if (found.length > 1) return reply(`Which ${found[0].name.split(' ')[0]}?`, found.map(p => ({ kind: 'person', id: p.id })));
-        return reply(this._describeAction('maps', place), [], { id: 'maps', label: '📍 Navigate to ' + place, args: { query: place } });
+    // A no-recipient WhatsApp handoff uses its official compose/share route.
+    // Photos must use the system share sheet because wa.me cannot attach files.
+    if (/^(?:share|send)\b.*\b(?:to|on|via)\s+(?:whatsapp|wa)\b/i.test(text)) {
+      const last = this._lastRecord();
+      const payload = this._sharePayload(last.record);
+      const requested = text.replace(/^(?:share|send)\s*/i, '').replace(/\s+(?:to|on|via)\s+(?:whatsapp|wa)\b.*$/i, '').trim();
+      if (!last.record && (!requested || /^(?:this|that|it)$/i.test(requested))) {
+        return reply('I do not have an item to share yet. Save or show something first, then ask to share it.');
       }
-    }
-    // map an address directly "open maps for 12 Market Road"
-    m = t.match(/(?:open|show)\s+(?:in\s+)?maps\s+(?:for|to)\s+(.+)/i) || t.match(/^(?:maps?|map)\s+(.+)/i);
-    if (m) { const q = m[1].trim().replace(/[?!.]+$/, ''); if (q) return reply('Opening the map…', [], { id: 'maps', label: '📍 Navigate', args: { query: q } }); }
-
-    // ---- Open (Instagram / web) ----
-    if (/^(open|launch|go to)\s+(instagram|insta)\b/i.test(t)) {
-      return reply('Opening Instagram…', [], { id: 'open', label: '📸 Open Instagram', args: { url: 'https://www.instagram.com/' } });
-    }
-    m = t.match(/open\s+(.+?)['’]s\s+instagram/i);
-    if (m) {
-      const found = this._findPeople(m[1]);
-      // No stored handle → open Instagram and let the user search; be honest.
-      return reply(found.length ? `Opening Instagram. I can’t jump straight into ${found[0].name}’s profile without their handle — you may need to search.` : 'Opening Instagram…', [], { id: 'open', label: '📸 Open Instagram', args: { url: 'https://www.instagram.com/' } });
-    }
-    m = t.match(/(?:open|visit|go to)\s+(https?:\/\/[^\s]+)/i);
-    if (m) { const u = m[1].replace(/[)\]"'.,;]+$/, ''); return reply('Opening link…', [], { id: 'open', label: '🔗 Open', args: { url: u } }); }
-
-    // ---- Copy ----
-    if (/^(copy|copied)\b/.test(low)) {
-      const what = t.replace(/^(copy|copied)\b/i, '').replace(/\s+/g, ' ').trim();
-      if (/phone|number|contact/i.test(what)) {
-        const name = what.replace(/phone|number|contact|the|of|for/gi, '').trim();
-        if (name) { const f = this._findPeople(name); if (f.length === 1 && f[0].phone) return reply(`Copying ${f[0].name}’s number…`, [], { id: 'copy', label: '📋 Copy number', args: { text: f[0].phone } }); }
+      if (!last.record) payload.text = requested;
+      if (payload.photoId) {
+        return reply('Brain can open your system share sheet with the photo. Choose WhatsApp there if it is available; Brain cannot attach or send it through WhatsApp automatically.', [], {
+          id: 'share', label: '🔗 Share photo with an app', args: payload
+        });
       }
-      if (what) return reply('Copying…', [], { id: 'copy', label: '📋 Copy', args: { text: what } });
+      if (!payload.text) return reply('I do not have shareable text for that item.');
+      return reply('WhatsApp’s official share page will open. Choose a recipient and review before sending.', [], {
+        id: 'whatsapp', label: '🟢 Open WhatsApp share', args: { number: '', text: payload.text }
+      });
     }
 
-    // ---- Add to calendar (reference an existing dated thing) ----
-    if (/add .* to (my )?calendar|add to calendar|save (this )?.*calendar/i.test(t) && /calendar/i.test(low)) {
-      const target = this.ctx.resolvePronoun(t, s) || (this.ctx.last.length ? this.ctx.last[0] : null);
-      const rec = target ? s.list(target.type).find(x => x.id === target.id) : null;
-      if (rec && (rec.at || rec.due)) {
-        const at = new Date(rec.at || rec.due);
-        return reply(`I’ve prepared a calendar file for “${rec.title || rec.name}” (${at.toLocaleDateString()}) — download & open it to add.`, [], { id: 'calendar', label: '📅 Add to calendar', args: { title: rec.title || rec.name, start: rec.at || rec.due, end: new Date(new Date(rec.at || rec.due).getTime() + 3600000).toISOString(), description: rec.note || '' } });
+    // Instagram only exposes navigation and the OS share sheet to a web app.
+    if (/^(?:open|launch|go to)\s+(?:instagram|insta)\b/i.test(text)) {
+      return reply('Opening Instagram.', [], { id: 'open', label: '📸 Open Instagram', args: { url: 'https://www.instagram.com/' } });
+    }
+    match = text.match(/^(?:open|visit|go to)\s+(.+?)(?:['’]s)?\s+(?:instagram|insta)\b/i);
+    if (match) return this._resolvePersonAction('instagram', match[1].trim());
+    if (/\b(?:share|send)\b.*\b(?:to|on)\s+(?:instagram|insta)\b/i.test(text)) {
+      const last = this._lastRecord();
+      const payload = this._sharePayload(last.record);
+      const shareText = last.record ? payload.text : text.replace(/^.*?(?:share|send)\s+/i, '').replace(/\s+(?:to|on)\s+(?:instagram|insta).*$/i, '').trim();
+      if (!last.record && (!shareText || /^(?:this|that|it)$/i.test(shareText))) {
+        return reply('I do not have an item to share yet. Save or show something first, then ask to share it.');
       }
-      return reply('Tell me which dated item to add, or I’ll need a date. For example say “remind me to meet Sara on Friday” and then “add that to my calendar”.');
+      if (!last.record) payload.text = shareText;
+      return reply(payload.photoId
+        ? 'Brain can open your system share sheet with the photo; choose Instagram there if it is offered. A browser cannot post to Instagram automatically.'
+        : 'Brain can open your system share sheet; choose Instagram there if it is offered. A browser cannot post to Instagram automatically.', [], {
+        id: 'share', label: payload.photoId ? '🔗 Share photo with an app' : '🔗 Share with an app', args: payload
+      });
     }
 
-    // ---- Share ----
-    if (/^(share|send)\b/.test(low) || /^share /.test(low)) {
-      // share today's plan / schedule
-      if (/today['’]?s plan|my schedule|today|plans?/.test(low)) {
-        const text = this._sharePlanText();
-        if (text) return reply('Here’s today’s plan — use the share button to send it anywhere.', [], { id: 'share', label: '🔗 Share plan', args: { title: 'Brain — Today’s plan', text } });
+    match = text.match(/^(?:open|visit|go to)\s+(https?:\/\/\S+)/i);
+    if (match) return reply('Opening link.', [], { id: 'open', label: '🔗 Open link', args: { url: match[1].replace(/[)\]"'.,;]+$/, '') } });
+
+    // Copy a stored value when named; plain text remains a real clipboard action.
+    if (/^(?:copy)\b/i.test(text)) {
+      const requested = text.replace(/^copy\s*/i, '').trim();
+      const valueMatch = requested.match(/^(?:the\s+)?(phone|number|email|address)\s+(?:of|for)?\s*(.+)$/i);
+      if (valueMatch) {
+        const people = this._findPeople(valueMatch[2]);
+        if (people.length === 1) {
+          const field = valueMatch[1].toLowerCase();
+          const value = field === 'email' ? people[0].email : field === 'address' ? people[0].address : people[0].phone;
+          if (value) return reply(`Ready to copy ${people[0].name}'s ${field}.`, [], { id: 'copy', label: `📋 Copy ${field}`, args: { text: value } });
+        }
       }
-      const what = t.replace(/^(share|send)\b/i, '').trim().replace(/^this /i, '');
-      if (/note/i.test(what)) {
-        const last = this.ctx.last.find(x => x.type === 'note') || this.ctx.last[0];
-        const rec = last ? s.list(last.type).find(x => x.id === last.id) : null;
-        if (rec) return reply('Sharing…', [], { id: 'share', label: '🔗 Share', args: { title: rec.title || 'Note', text: rec.body || rec.title || '' } });
+      if (requested) return reply('Ready to copy.', [], { id: 'copy', label: '📋 Copy', args: { text: requested } });
+    }
+
+    // Calendar files are a legitimate handoff, never a claim that an event was added.
+    if (/\b(?:add|save)\b.*\bcalendar\b/i.test(text)) {
+      const last = this._lastDatedRecord();
+      const record = last.record;
+      if (record && (record.at || record.due)) {
+        const start = record.at || record.due;
+        return reply(`A calendar file is ready for “${record.title || record.name}”. Open it and confirm the event in your calendar.`, [], {
+          id: 'calendar', label: '📅 Add to calendar', args: {
+            title: record.title || record.name || 'Brain item', start,
+            end: record.end || new Date(new Date(start).getTime() + 3600000).toISOString(),
+            allDay: !!record.allDay, location: record.location || record.address || '', description: record.notes || record.note || ''
+          }
+        });
       }
-      // share a person's number or anything with text
-      const found = what ? this._findPeople(what) : [];
-      if (found.length === 1) return reply('Sharing contact…', [], { id: 'share', label: '🔗 Share contact', args: { title: found[0].name, text: found[0].name + (found[0].phone ? ' · ' + found[0].phone : '') + (found[0].email ? ' · ' + found[0].email : '') } });
-      if (what) return reply('Sharing…', [], { id: 'share', label: '🔗 Share', args: { title: 'Brain', text: what } });
+      return reply('Tell me which dated task, reminder, or event to add first. For example: “schedule dentist tomorrow at 3pm”, then “add that to my calendar”.');
+    }
+
+    if (/^(?:share|send)\b/i.test(text)) {
+      const requested = text.replace(/^(?:share|send)\s*/i, '').trim();
+      if (/today['’]?s (?:plan|schedule)|my schedule|today(?:\b|$)|plans?\b/i.test(requested)) {
+        return reply('Here is today’s plan. The share sheet will let you choose an installed app.', [], { id: 'share', label: '🔗 Share plan', args: { title: 'Brain — Today’s plan', text: this._sharePlanText() } });
+      }
+      const preferred = /reminder/i.test(requested) ? 'reminder' : /note/i.test(requested) ? 'note' : /task/i.test(requested) ? 'task' : /event/i.test(requested) ? 'event' : null;
+      const last = this._lastRecord(preferred);
+      if (/^(?:this|the)?\s*(?:photo|image|note|reminder|task|event|journal)?\s*$/i.test(requested) && last.record) {
+        const payload = this._sharePayload(last.record);
+        return reply(payload.photoId
+          ? 'Ready to open your system share sheet with this local photo.'
+          : 'Ready to open your system share sheet.', [], {
+          id: 'share', label: payload.photoId ? '🔗 Share photo' : '🔗 Share', args: payload
+        });
+      }
+      const people = this._findPeople(requested);
+      if (people.length === 1) {
+        const person = people[0];
+        return reply('Ready to share this contact through your system share sheet.', [], { id: 'share', label: '🔗 Share contact', args: { title: person.name, text: [person.name, person.phone, person.email, person.address].filter(Boolean).join('\n') } });
+      }
+      if (requested) return reply('Ready to open your system share sheet.', [], { id: 'share', label: '🔗 Share', args: { title: 'Brain', text: requested } });
     }
 
     return null;
@@ -299,7 +462,11 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     const due = s.list('task').filter(x => x.status !== 'done' && x.due && todayKey(new Date(x.due)) === day);
     if (due.length) lines.push('Tasks: ' + due.map(x => x.title).join(', '));
     for (const e of s.list('event')) if (e.at && todayKey(new Date(e.at)) === day) lines.push('📅 ' + e.title);
-    const rems = s.list('reminder').filter(r => r.status === 'active' && (r.at ? todayKey(new Date(r.at)) === day : true));
+    const now = new Date();
+    const rems = s.list('reminder').filter(r => r.status === 'active' && (
+      (r.at && todayKey(new Date(r.at)) === day)
+      || (r.recur && D.recurrenceMatches(r.recur, now, r.recur.anchor || r.createdAt))
+    ));
     if (rems.length) lines.push('Reminders: ' + rems.map(r => r.title).join(', '));
     const low = s.list('stockItem').filter(x => x.lowThreshold != null && x.qty <= x.lowThreshold);
     if (low.length) lines.push('Low stock: ' + low.map(x => x.name).join(', '));
@@ -324,7 +491,7 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     }
 
     // Lists
-    const listKinds = { reminders: 'reminder', tasks: 'task', notes: 'note', contacts: 'person', people: 'person', stock: 'stockItem', events: 'event', habits: 'habit', journal: 'journal' };
+    const listKinds = { reminders: 'reminder', tasks: 'task', notes: 'note', contacts: 'person', people: 'person', photos: 'photo', pictures: 'photo', stock: 'stockItem', events: 'event', habits: 'habit', journal: 'journal' };
     for (const key in listKinds) {
       if (new RegExp('\\b(show|list|my|all|view)?\\s*' + key + '\\b').test(low) && /\b(show|list|view|open|my)\b/.test(low)) {
         const type = listKinds[key];
@@ -359,10 +526,19 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     // habit streak
     if (/streak|did i (do|log)|habit/.test(low) && /streak/.test(low)) return this._streaks();
 
-    // phone number / person detail
-    m = t.match(/(?:what'?s|what is|give me|show)\s+(?:the\s+)?phone\s+(?:number\s+)?(?:of|for)?\s*([a-z0-9 ]+?)\s*$/i) ||
-        t.match(/([a-z0-9 ]+?)(?:'s)?\s+(?:phone|number|mobile)\s*\??$/i);
-    // person birthday lookup handled by person search below via generic
+    // Phone/email/address lookup returns an actionable contact card rather than dead text.
+    m = t.match(/(?:what'?s|what is|give me|show)\s+(?:the\s+)?(?:phone\s+)?(?:number|phone|mobile|email|address)\s+(?:of|for)?\s*([a-z0-9 .'-]+?)\s*\??$/i) ||
+        t.match(/([a-z0-9 .'-]+?)(?:'s)?\s+(?:phone|number|mobile|email|address)\s*\??$/i);
+    if (m) {
+      const people = this._findPeople(m[1]);
+      if (people.length === 1) {
+        const person = people[0];
+        this.ctx.push('person', person.id, person.name);
+        return reply(`${person.name}:`, [{ kind: 'person', id: person.id }]);
+      }
+      if (people.length > 1) return this._askExternalChoice('call', people);
+      return reply(`I could not find a saved person matching “${m[1]}”.`);
+    }
     return null;
   }
 
@@ -398,9 +574,19 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     // due/open tasks
     const tasks = s.list('task').filter(x => x.status !== 'done' && x.due && new Date(x.due) <= end).sort((a, b) => new Date(a.due) - new Date(b.due));
     for (const x of tasks.slice(0, 10)) { lines.push(`• ${x.title} — ${fmtDate(this.store, new Date(x.due))}${relOf(this.store, new Date(x.due)) === 'today' ? ' (today)' : relOf(this.store, new Date(x.due)) === 'tomorrow' ? ' (tomorrow)' : ''}`); cards.push({ kind: 'task', id: x.id }); }
-    // reminders active / recurring due
-    const rems = s.list('reminder').filter(r => r.status !== 'done');
-    for (const r of rems.slice(0, 8)) { cards.push({ kind: 'reminder', id: r.id }); }
+    // Only show reminders with an occurrence in this horizon. Listing every
+    // recurring rule makes “what's coming up?” misleading for weekly/monthly
+    // rules that do not occur soon.
+    const rems = s.list('reminder').filter(reminder => {
+      if (reminder.status === 'done') return false;
+      if (reminder.snoozedUntil) return new Date(reminder.snoozedUntil) <= end;
+      if (reminder.recur) {
+        const next = D.nextOccurrence(reminder.recur, new Date(now.getTime() - 1000));
+        return !!next && next <= end;
+      }
+      return !!reminder.at && new Date(reminder.at) <= end;
+    });
+    for (const reminder of rems.slice(0, 8)) { cards.push({ kind: 'reminder', id: reminder.id }); }
     // events in range
     const ev = s.list('event').filter(e => e.at && new Date(e.at) >= now && new Date(e.at) <= end).sort((a, b) => new Date(a.at) - new Date(b.at));
     for (const e of ev.slice(0, 8)) { lines.push(`📅 ${e.title} — ${fmtDate(this.store, new Date(e.at))}`); cards.push({ kind: 'event', id: e.id }); }
@@ -460,15 +646,29 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     // "Actually make that/it X" -> edit last money amount
     const amtM = t.match(/(?:actually\s+)?(?:make that|make it|change it|update it|set it|change that|make this|it'?s)\s*(?:to)?\s*[₹$€£]?\s*([\d.,]+)/i);
     if (amtM && last) {
-      if (last.type === 'money') { const v = parseNum(amtM[1]); s.updateSync('money', last.id, { amount: Math.abs(v) }); this.ctx.push('money', last.id, 'money'); return reply(`Updated to ${moneyToken(v)}.`); }
+      if (last.type === 'money') {
+        const value = parseNum(amtM[1]);
+        const updated = s.updateSync('money', last.id, { amount: Math.abs(value) });
+        if (!updated) return saveFailure(null, 'that money record');
+        this.ctx.push('money', last.id, 'money'); return reply(`Updated to ${moneyToken(value)}.`);
+      }
     }
     // "mark it done" / "complete it" / "done" (last)
     if (/\b(mark|mark it|mark that)\s+(done|complete)\b|(?:^| )(done|complete|finish it|finish that)\b/.test(low) && last) {
-      if (last.type === 'task') { A.completeTask(s, last.id); return reply(`Marked “${s.list('task').find(x => x.id === last.id).title}” done.`); }
-      if (last.type === 'reminder') { s.updateSync('reminder', last.id, { status: 'done' }); return reply('Reminder done.'); }
+      if (last.type === 'task') {
+        const completed = A.completeTask(s, last.id);
+        return saveFailure(completed, 'that task') || reply(completed.text);
+      }
+      if (last.type === 'reminder') {
+        const completed = A.completeReminder(s, last.id);
+        return saveFailure(completed, 'that reminder') || reply(completed.text);
+      }
     }
     // "reopen / uncomplete" last task
-    if (/\b(reopen|uncomplete|undo|open again)\b/.test(low) && last && last.type === 'task') { A.reopenTask(s, last.id); return reply('Reopened.'); }
+    if (/\b(reopen|uncomplete|undo|open again)\b/.test(low) && last && last.type === 'task') {
+      const reopened = A.reopenTask(s, last.id);
+      return saveFailure(reopened, 'that task') || reply(reopened.text);
+    }
     // "delete that/it/the last one"
     if (/\b(delete|remove|clear|cancel)\s+(that|it|this|the last one)\b|\bdelete (it|that)\b/.test(low) && last) {
       this.ctx.pending = { kind: 'confirm_delete', target: last };
@@ -480,10 +680,12 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
 
   _doDelete(target) {
     const s = this.store;
-    s.removeSync(target.type, target.id);
-    this.ctx.last = this.ctx.last.filter(x => !(x.type === target.type && x.id === target.id));
+    const label = this._label(target);
+    const removed = s.removeSync(target.type, target.id);
     this.ctx.clearPending();
-    return reply(`Deleted ${this._label(target)}.`);
+    if (!removed) return reply('That item is no longer available.');
+    this.ctx.last = this.ctx.last.filter(item => !(item.type === target.type && item.id === target.id));
+    return reply(`Deleted ${label}.`);
   }
   _label(ref) { return ref.label || (this.store.list(ref.type).find(x => x.id === ref.id) || {}).title || (this.store.list(ref.type).find(x => x.id === ref.id) || {}).name || 'that'; }
 
@@ -511,7 +713,18 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
 
     // ---- WAKE / bare alarm-ish ----
     const wake = t.match(/\bwake me up\s+(?:at\s+)?(.+)/i);
-    if (wake) { const time = timeFromText(wake[1]); if (time) { const at = new Date(now); at.setHours(time.h, time.min, 0, 0); if (at <= now) at.setDate(at.getDate() + 1); const r = A.createReminder(s, { title: 'Wake up', at }); return reply(r.text); } return this._askReminderTime('Wake up'); }
+    if (wake) {
+      const time = timeFromText(wake[1]);
+      if (time) {
+        const at = new Date(now); at.setHours(time.h, time.min, 0, 0);
+        if (at <= now) at.setDate(at.getDate() + 1);
+        const r = A.createReminder(s, { title: 'Wake up', at });
+        const failed = saveFailure(r, 'that reminder'); if (failed) return failed;
+        this.ctx.push('reminder', r.id, 'Wake up');
+        return reply(r.text, [{ kind: 'reminder', id: r.id }]);
+      }
+      return this._askReminderTime('Wake up');
+    }
 
     // ---- REMINDERS ----
     if (/\bremind me\b/.test(low) || /remind me to|set (a )?reminder|don'?t let me forget/.test(low)) {
@@ -520,6 +733,10 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
       if (!title) return reply('Remind you to do what?');
       return this._addReminder(title, t);
     }
+
+    // ---- EVENTS (before tasks: "schedule a meeting" is an event) ----
+    const eventRes = this._tryEvent(low, t);
+    if (eventRes) return eventRes;
 
     // ---- TASKS ----
     const taskRes = this._tryTask(low, t);
@@ -568,6 +785,8 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
       const params = { title, recur: Object.assign({}, recur, { time }) };
       if (!time && !/morning|evening|tonight|afternoon/.test(low2(fullText))) return this._askReminderTime(title, recur);
       const r = A.createReminder(s, { title, recur: params.recur });
+      const failed = saveFailure(r, 'that reminder');
+      if (failed) return failed;
       this.ctx.push('reminder', r.id, title);
       return reply(r.text, [{ kind: 'reminder', id: r.id }]);
     }
@@ -576,7 +795,10 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     if (res.matched && (res.hasTime || /tomorrow|tonight|today|[a-z]day|weekend|week|month|march|jan|feb|apr|may|jun|jul|aug|sep|oct|nov|dec|in \d+|\/|-/i.test(fullText))) {
       // has a day/date or a clock
       if (!res.hasTime && !/morning|afternoon|evening|tonight|noon|midnight/.test(low2(fullText))) return this._askReminderTime(title, null, res.date);
+      if (res.date <= now) return reply('That reminder time has already passed. Choose a future time, such as “tomorrow at 7pm”.');
       const r = A.createReminder(s, { title, at: res.date });
+      const failed = saveFailure(r, 'that reminder');
+      if (failed) return failed;
       this.ctx.push('reminder', r.id, title);
       return reply(r.text, [{ kind: 'reminder', id: r.id }]);
     }
@@ -589,19 +811,81 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
   }
   _finishReminder(params, whenText) {
     const s = this.store; const now = new Date();
+    if (/^(?:cancel|skip|never mind|nevermind|stop)\b/i.test(String(whenText || '').trim())) {
+      this.ctx.clearPending();
+      return reply('Okay, I did not save that reminder.');
+    }
     const recur = parseRecur('every ' + whenText, now) || params.recur;
     if (recur) {
       let time = recur.time || D.clockString(whenText) || '09:00';
       const rr = Object.assign({}, recur, { time });
       const r = A.createReminder(s, { title: params.title, recur: rr });
+      const failed = saveFailure(r, 'that reminder');
+      if (failed) return failed;
       this.ctx.clearPending(); this.ctx.push('reminder', r.id, params.title);
       return reply(r.text, [{ kind: 'reminder', id: r.id }]);
     }
     const res = resolveMoment(whenText, now);
-    if (!res.matched) { this.ctx.clearPending(); return reply('I didn’t get that as a time. Want to try again or skip this?'); }
+    if (!res.matched) return reply('I didn’t get that as a time. Try again, or say “skip”.');
+    // A follow-up such as “7pm” supplies the missing clock, not a replacement
+    // for the date we already understood from “remind me … tomorrow”.
+    const suppliedClock = D.timeFromText(whenText) || D.implicitTime(whenText);
+    const suppliedDate = D.dateWordFromText(whenText, now).matched || D.relativeFromText(whenText, now).matched;
+    if (params.atHint && suppliedClock && !suppliedDate) {
+      const hinted = new Date(params.atHint);
+      if (!Number.isNaN(hinted.getTime())) {
+        hinted.setHours(suppliedClock.h, suppliedClock.min, 0, 0);
+        res.date = hinted;
+      }
+    }
+    if (res.date <= now) return reply('That reminder time has already passed. Try a future time, or say “skip”.');
     const r = A.createReminder(s, { title: params.title, at: res.date });
+    const failed = saveFailure(r, 'that reminder');
+    if (failed) return failed;
     this.ctx.clearPending(); this.ctx.push('reminder', r.id, params.title);
     return reply(r.text, [{ kind: 'reminder', id: r.id }]);
+  }
+
+  _tryEvent(low, t) {
+    if (/\bremind me\b/.test(low)) return null;
+    const eventWords = /\b(?:event|appointment|meeting|dentist|doctor|flight|trip|concert|class|exam|interview|reservation)\b/i;
+    const explicit = /^(?:add|create|schedule|book|set)\s+(?:an?\s+)?(?:event|appointment|meeting|dentist|doctor|flight|trip|concert|class|exam|interview|reservation)\b/i;
+    if (!eventWords.test(t) || (!explicit.test(t) && !/\b(?:on|tomorrow|today|next|at)\b/i.test(t))) return null;
+    const now = new Date();
+    const resolved = resolveMoment(t, now);
+    const title = cleanEventTitle(t);
+    if (!title) return reply('What event should I add?');
+    const location = eventLocationFromText(t);
+    const notes = eventNotesFromText(t);
+    const kindMatch = t.match(/\b(event|appointment|meeting|dentist|doctor|flight|trip|concert|class|exam|interview|reservation)\b/i);
+    const kind = kindMatch ? kindMatch[1].toLowerCase() : 'event';
+    if (!resolved.matched) {
+      this.ctx.setPending('event_time', { title, location, notes, kind }, 'When is it?');
+      return reply(`When is “${title}”? (for example, tomorrow at 3pm)`);
+    }
+    const allDay = !resolved.hasTime;
+    const end = allDay ? new Date(resolved.date.getTime() + 86400000) : new Date(resolved.date.getTime() + 60 * 60 * 1000);
+    const result = A.createEvent(this.store, { title, at: resolved.date, end, allDay, kind, location, notes });
+    if (result.error) return reply(result.error);
+    this.ctx.push('event', result.id, title);
+    return reply(result.text, [{ kind: 'event', id: result.id }]);
+  }
+
+  _finishEvent(params, whenText) {
+    if (/^(?:cancel|skip|never mind|nevermind|stop)\b/i.test(String(whenText || '').trim())) {
+      this.ctx.clearPending();
+      return reply('Okay, I did not save that event.');
+    }
+    const resolved = resolveMoment(whenText, new Date());
+    if (!resolved.matched) return reply('I did not understand that date or time. Try “tomorrow at 3pm” or say “cancel”.');
+    const allDay = !resolved.hasTime;
+    const end = allDay ? new Date(resolved.date.getTime() + 86400000) : new Date(resolved.date.getTime() + 60 * 60 * 1000);
+    const result = A.createEvent(this.store, { ...params, at: resolved.date, end, allDay });
+    const failed = saveFailure(result, 'that event');
+    if (failed) return failed;
+    this.ctx.clearPending();
+    this.ctx.push('event', result.id, params.title);
+    return reply(result.text, [{ kind: 'event', id: result.id }]);
   }
 
   _tryTask(low, t) {
@@ -620,15 +904,20 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
       if (m) body = m[1] + ' ' + m[2];
     }
     if (!body) return null;
-    // split trailing due phrase
+    // split trailing due phrase and preserve a recurrence as a real recurrence.
     const parts = splitDue(body);
-    const title = cap(parts.title);
+    const recurrence = parseRecur(body, now);
+    const title = cap(cleanTaskTitle(parts.title, recurrence));
     let due = null; let dueTxt = '';
-    if (parts.due) {
+    if (recurrence) {
+      due = D.nextOccurrence(recurrence, now);
+      dueTxt = due;
+    } else if (parts.due) {
       const res = resolveMoment(parts.due, now);
       if (res.matched && (res.hasTime || /tomorrow|today|tonight|[a-z]day|weekend|week|month|in \d+|\/|\d/.test(parts.due))) { due = res.date; dueTxt = res.date; }
     }
-    const r = A.createTask(s, { title, due });
+    const r = A.createTask(s, { title, due, recur: recurrence });
+    if (r.error) return reply(r.error);
     if (dueTxt) dueTxt = fmtDate(this.store, dueTxt);
     this.ctx.push('task', r.id, title);
     return reply(r.text, [{ kind: 'task', id: r.id }]);
@@ -641,61 +930,120 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
       const content = m[2].trim();
       const isPrivate = /password|pin|passcode|wifi|otp|secret|private|card (number|no)|cvv/i.test(low);
       const r = A.saveNote(s, { title: '', body: content, isPrivate });
+      const failed = saveFailure(r, 'that note'); if (failed) return failed;
+      this.ctx.push('note', r.id, r.rec.title || 'note');
       return reply(r.text, [{ kind: 'note', id: r.id }]);
     }
     // wifi password
     m = t.match(/(?:wifi|wi-?fi)\s*(?:password|pass|key)?\s*(?:is|=|:)?\s*[:,-]?\s*([\w@#$%^&*!.\-]{4,})/i);
-    if (m && /wifi/.test(low)) { const r = A.saveNote(s, { title: 'WiFi password', body: m[1], isPrivate: true }); this.ctx.push('note', r.id, 'WiFi password'); return reply('Saved 🔒', [{ kind: 'note', id: r.id }]); }
+    if (m && /wifi/.test(low)) {
+      const r = A.saveNote(s, { title: 'WiFi password', body: m[1], isPrivate: true });
+      const failed = saveFailure(r, 'that note'); if (failed) return failed;
+      this.ctx.push('note', r.id, 'WiFi password'); return reply('Saved 🔒', [{ kind: 'note', id: r.id }]);
+    }
     // recipe/address specifics
     m = t.match(/recipe\s*:?\s*(.+)$/i);
-    if (m && /recipe/.test(low)) { const r = A.saveNote(s, { title: 'Recipe', body: m[1].trim(), tags: ['recipe'] }); return reply(r.text, [{ kind: 'note', id: r.id }]); }
+    if (m && /recipe/.test(low)) {
+      const r = A.saveNote(s, { title: 'Recipe', body: m[1].trim(), tags: ['recipe'] });
+      const failed = saveFailure(r, 'that note'); if (failed) return failed;
+      this.ctx.push('note', r.id, r.rec.title || 'Recipe');
+      return reply(r.text, [{ kind: 'note', id: r.id }]);
+    }
     m = t.match(/(?:parking spot|parking)\s+(?:is|=)\s+(.+)/i);
-    if (m) { const r = A.saveNote(s, { title: 'Parking spot', body: m[1].trim() }); return reply(r.text, [{ kind: 'note', id: r.id }]); }
+    if (m) {
+      const r = A.saveNote(s, { title: 'Parking spot', body: m[1].trim() });
+      const failed = saveFailure(r, 'that note'); if (failed) return failed;
+      this.ctx.push('note', r.id, r.rec.title || 'Parking spot');
+      return reply(r.text, [{ kind: 'note', id: r.id }]);
+    }
     return null;
   }
 
   _tryPerson(low, t) {
     const s = this.store;
+    // Instagram handle. This only stores a handle; opening it later uses the
+    // public profile URL and never claims Instagram automation.
+    let m = t.match(/([a-z][a-z .'-]+?)(?:['’]s)?\s+(?:instagram|insta)(?:\s+(?:handle|username))?\s*(?:is|=|:)\s*@?([a-z0-9._]{1,30})\b/i);
+    if (m) {
+      const name = cleanName(m[1]);
+      const person = this._ensurePerson(name);
+      if (!person) return saveFailure(null, 'that person');
+      const updated = s.updateSync('person', person.id, { instagram: m[2] });
+      if (!updated) return saveFailure(null, 'that person');
+      this.ctx.push('person', updated.id, updated.name);
+      return reply(`Saved ${updated.name}'s Instagram handle.`, [{ kind: 'person', id: updated.id }]);
+    }
+    // Aliases make later "call Johnny" resolution deterministic.
+    m = t.match(/([a-z][a-z .'-]+?)(?:['’]s)?\s+(?:alias|nickname|also known as)\s*(?:is|=|:)?\s*([a-z][a-z .'-]+)\s*$/i);
+    if (m) {
+      const name = cleanName(m[1]);
+      const alias = cleanName(m[2]);
+      const person = this._ensurePerson(name);
+      if (!person) return saveFailure(null, 'that person');
+      const aliases = [...new Set([...(person.aliases || []), alias])];
+      const updated = s.updateSync('person', person.id, { aliases });
+      if (!updated) return saveFailure(null, 'that person');
+      this.ctx.push('person', updated.id, updated.name);
+      return reply(`Saved ${alias} as an alias for ${updated.name}.`, [{ kind: 'person', id: updated.id }]);
+    }
     // birthday
-    let m = t.match(/([a-z][a-z ]+?)(?:'s|')?\s+birthday\s+(?:is|on|falls on)?\s+(.+?)\s*$/i);
+    m = t.match(/([a-z][a-z ]+?)(?:'s|')?\s+birthday\s+(?:is|on|falls on)?\s+(.+?)\s*$/i);
     if (m && /birthday/.test(low)) {
       const name = cleanName(m[1].replace(/'s$/i, ''));
       const bdRaw = m[2].trim();
       if (/^(me|my|mine)$/i.test(name)) return this._addMyBirthday(bdRaw);
       if (this._isCommon(name)) return null;
       let p = this._ensurePerson(name);
+      if (!p) return saveFailure(null, 'that person');
       p = s.updateSync('person', p.id, { birthday: bdRaw });
+      if (!p) return saveFailure(null, 'that person');
       this.ctx.push('person', p.id, name);
       return reply(`Saved: ${name}'s birthday ${bdRaw}.`, [{ kind: 'person', id: p.id }]);
     }
     // phone number detail
     m = t.match(/([a-z][a-z ]+?)(?:'s)?\s+(?:phone|number|mobile|contact)\s*(?:number)?\s*(?:is|=)\s*([+\d][\d\s-]{6,})/i);
-    if (m) { const name = cleanName(m[1]); const num = m[2].replace(/\s/g, ''); const p = this._ensurePerson(name); s.updateSync('person', p.id, { phone: num }); this.ctx.push('person', p.id, name); return reply(`Saved ${name}'s number ${num}.`, [{ kind: 'person', id: p.id }]); }
+    if (m) {
+      const name = cleanName(m[1]); const num = m[2].replace(/\s/g, '');
+      const person = this._ensurePerson(name); if (!person) return saveFailure(null, 'that person');
+      const p = s.updateSync('person', person.id, { phone: num }); if (!p) return saveFailure(null, 'that person');
+      this.ctx.push('person', p.id, name); return reply(`Saved ${name}'s number ${num}.`, [{ kind: 'person', id: p.id }]);
+    }
     // add contact explicit
     m = t.match(/(?:add|save|new)\s+contact\s*[:,-]?\s*([a-z][a-z ]+?)(?:\s*,\s*([+\d][\d\s-]{6,}))?/i);
-    if (m && /contact/.test(low)) { const name = cleanName(m[1]); const p = this._ensurePerson(name); if (m[2]) s.updateSync('person', p.id, { phone: m[2].replace(/\s/g, '') }); this.ctx.push('person', p.id, name); return reply(`Saved contact ${p.name}.`, [{ kind: 'person', id: p.id }]); }
+    if (m && /contact/.test(low)) {
+      const name = cleanName(m[1]); const person = this._ensurePerson(name); if (!person) return saveFailure(null, 'that person');
+      const p = m[2] ? s.updateSync('person', person.id, { phone: m[2].replace(/\s/g, '') }) : person;
+      if (!p) return saveFailure(null, 'that person');
+      this.ctx.push('person', p.id, name); return reply(`Saved contact ${p.name}.`, [{ kind: 'person', id: p.id }]);
+    }
     // email
     m = t.match(/([a-z][a-z .'-]+?)(?:'s)?\s+email\s*(?:address\s*)?(?:is|is at)?\s*([\w.+-]+@[\w-]+\.[\w.]+)/i);
     if (m && /email/.test(low) && !/^(call|text|message|whatsapp|share)\b/.test(low)) {
       const name = cleanName(m[1].replace(/'s$/i, '')); if (this._isCommon(name)) return null;
-      const em = m[2].toLowerCase(); const p = this._ensurePerson(name);
-      s.updateSync('person', p.id, { email: em }); this.ctx.push('person', p.id, name);
+      const em = m[2].toLowerCase(); const person = this._ensurePerson(name);
+      if (!person) return saveFailure(null, 'that person');
+      const p = s.updateSync('person', person.id, { email: em }); if (!p) return saveFailure(null, 'that person');
+      this.ctx.push('person', p.id, name);
       return reply(`Saved ${name}'s email ${em}.`, [{ kind: 'person', id: p.id }]);
     }
     // address / lives at
     m = t.match(/([a-z][a-z .'-]+?)\s+(?:lives at|address is|address:|home is|works at|place is)\s+(.+?)\s*$/i);
     if (m && /lives at|address|home is|works at|place is/i.test(low)) {
       const name = cleanName(m[1]); if (this._isCommon(name)) return null;
-      const addr = m[2].replace(/[.!]+$/, '').trim(); const p = this._ensurePerson(name);
-      s.updateSync('person', p.id, { address: addr }); this.ctx.push('person', p.id, name);
+      const addr = m[2].replace(/[.!]+$/, '').trim(); const person = this._ensurePerson(name);
+      if (!person) return saveFailure(null, 'that person');
+      const p = s.updateSync('person', person.id, { address: addr }); if (!p) return saveFailure(null, 'that person');
+      this.ctx.push('person', p.id, name);
       return reply(`Saved ${name}'s address.`, [{ kind: 'person', id: p.id }]);
     }
     // misc person fact "X is allergic..." -> needs a known person; skip if ambiguous
     return null;
   }
   _addMyBirthday(bdRaw) {
-    const e = A.createEvent(this.store, { title: (this.name || 'Your') + ' birthday', at: A.nextBirthdayFor(bdRaw), allDay: true, kind: 'birthday' });
-    return reply(e.text + ' (annual reminder can be added on the event).', [{ kind: 'event', id: e.id }]);
+    const at = A.nextBirthdayFor(bdRaw);
+    if (!at) return reply('I did not understand that birthday date. Try “March 12”.');
+    const e = A.createEvent(this.store, { title: (this.name || 'Your') + ' birthday', at, allDay: true, kind: 'birthday' });
+    return saveFailure(e, 'that event') || reply(e.text, [{ kind: 'event', id: e.id }]);
   }
   _isCommon(n) { return /^(mom|dad|mum|mother|father|brother|sister|grandma|grandpa|friend|doctor|teacher|the|a|my|your)$/i.test(n); }
   _ensurePerson(name) {
@@ -706,40 +1054,71 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
   }
 
   _tryMoney(low, t) {
-    const s = this.store; const now = new Date();
-    const amtIn = t.match(/(?:[₹$€£])\s*([\d.,]+)/) || t.match(/\b([\d.,]+)\s*(?:rupees|rs\.?|inr|dollars?)\b/i) || null;
+    const s = this.store;
+    const saveDebt = (name, amount, dir) => {
+      // Ensure a referenced person can be represented before recording a debt;
+      // never claim a debt was recorded if its required contact failed.
+      if (!this._ensurePerson(name)) return saveFailure(null, 'that person');
+      const record = A.logDebt(s, { person: name, amount, dir });
+      const failed = saveFailure(record, 'that debt');
+      if (failed) return failed;
+      this.ctx.push('debt', record.id, name);
+      return reply(record.text, [{ kind: 'debt', id: record.id }]);
+    };
+    const saveMoney = (kind, amount, category, { context = true, monthTotal = false } = {}) => {
+      const record = A.logMoney(s, { kind, amount, category });
+      const failed = saveFailure(record, 'that money record');
+      if (failed) return failed;
+      if (context) this.ctx.push('money', record.id, category);
+      return reply(record.text + (monthTotal ? ` (this month: ${this._monthTotals()})` : ''), [{ kind: 'money', id: record.id }]);
+    };
 
-    // repayment settles debt
+    // Repayment settles an open debt when one exists; otherwise it is income.
     let m = t.match(/([a-z][a-z ]+?)\s+(?:paid\s+me(?: back)?|repaid|paid back)\s+([₹$€£]?\s*[\d.,]+)/i);
-    if (m) { const nm = cleanName(m[1]); const debt = s.list('debt').find(d => d.dir === 'they_owe_me' && d.status !== 'settled' && d.person.toLowerCase() === nm.toLowerCase()); if (debt) { A.settleDebt(s, debt.id); return reply(`Recorded: ${nm} repaid you.`); } const v = parseNum(m[2]); A.logMoney(s, { kind: 'income', amount: v, category: 'repayment from ' + nm }); return reply(`Recorded ${moneyToken(v)} from ${nm}.`); }
+    if (m) {
+      const name = cleanName(m[1]);
+      const debt = s.list('debt').find(record => record.dir === 'they_owe_me' && record.status !== 'settled' && record.person.toLowerCase() === name.toLowerCase());
+      if (debt) {
+        const settled = A.settleDebt(s, debt.id);
+        return saveFailure(settled, 'that debt') || reply(`Recorded: ${name} repaid you.`);
+      }
+      const value = parseNum(m[2]);
+      return saveMoney('income', value, `repayment from ${name}`);
+    }
 
     // "X owes me Y"
     m = t.match(/([a-z][a-z ]+?)\s+owes\s+me\s+[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const nm = cleanName(m[1]); if (!this._isCommon(nm)) { this._ensurePerson(nm); const r = A.logDebt(s, { person: nm, amount: parseNum(m[2]), dir: 'they_owe_me' }); this.ctx.push('debt', r.id, nm); return reply(r.text, [{ kind: 'debt', id: r.id }]); } }
+    if (m) {
+      const name = cleanName(m[1]);
+      if (!this._isCommon(name)) return saveDebt(name, parseNum(m[2]), 'they_owe_me');
+    }
     // "I owe X Y"
     m = t.match(/\bi owe\s+([a-z][a-z ]+?)\s+[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const nm = cleanName(m[1]); this._ensurePerson(nm); const r = A.logDebt(s, { person: nm, amount: parseNum(m[2]), dir: 'i_owe_them' }); this.ctx.push('debt', r.id, nm); return reply(r.text, [{ kind: 'debt', id: r.id }]); }
-    // "lent X Y" (I lent) -> they owe me ; "X lent me Y" -> I owe X
+    if (m) return saveDebt(cleanName(m[1]), parseNum(m[2]), 'i_owe_them');
+    // "lent X Y" (I lent) -> they owe me; "X lent me Y" -> I owe X
     m = t.match(/([a-z][a-z ]+?)\s+lent\s+me\s+[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const nm = cleanName(m[1]); this._ensurePerson(nm); const r = A.logDebt(s, { person: nm, amount: parseNum(m[2]), dir: 'i_owe_them' }); return reply(r.text, [{ kind: 'debt', id: r.id }]); }
+    if (m) return saveDebt(cleanName(m[1]), parseNum(m[2]), 'i_owe_them');
     m = t.match(/(?:i\s+|)lent\s+([a-z][a-z ]+?)\s+[₹$€£]?\s*([\d.,]+)/i);
-    if (m && !/\bme\b/.test(m[0])) { const nm = cleanName(m[1]); this._ensurePerson(nm); const r = A.logDebt(s, { person: nm, amount: parseNum(m[2]), dir: 'they_owe_me' }); return reply(r.text, [{ kind: 'debt', id: r.id }]); }
+    if (m && !/\bme\b/.test(m[0])) return saveDebt(cleanName(m[1]), parseNum(m[2]), 'they_owe_me');
 
-    // expense
+    // Expenses
     m = t.match(/(?:spen[dt]|spending)\s+(?:about\s+)?[₹$€£]?\s*([\d.,]+)\s*(?:on|for|at)\s*(.+?)\s*$/i);
-    if (m) { const cat = m[2].trim().replace(/[.!]/g, ''); const r = A.logMoney(s, { kind: 'expense', amount: parseNum(m[1]), category: cat }); this.ctx.push('money', r.id, cat); return reply(r.text + ' (this month: ' + this._monthTotals() + ')', [{ kind: 'money', id: r.id }]); }
+    if (m) return saveMoney('expense', parseNum(m[1]), m[2].trim().replace(/[.!]/g, ''), { context: true, monthTotal: true });
     m = t.match(/(?:spen[dt]|spending)\s+(?:about\s+)?[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const r = A.logMoney(s, { kind: 'expense', amount: parseNum(m[1]), category: 'expense' }); this.ctx.push('money', r.id, 'expense'); return reply(r.text + ' (this month: ' + this._monthTotals() + ')', [{ kind: 'money', id: r.id }]); }
-    // "paid electricity bill 1200" expense ; "paid X 800" where X person => maybe income they paid user; but phrase "paid 300 for groceries" user pays.
+    if (m) return saveMoney('expense', parseNum(m[1]), 'expense', { context: true, monthTotal: true });
+    // "paid 300 for groceries" is an expense.
     m = t.match(/(?:paid|pays?)\s+[₹$€£]?\s*([\d.,]+)\s+(?:for\s+)?(.+?)\s*$/i);
-    if (m) { const cat = m[2].trim().replace(/[.!]/g, ''); const r = A.logMoney(s, { kind: 'expense', amount: parseNum(m[1]), category: cat }); return reply(r.text, [{ kind: 'money', id: r.id }]); }
-    // bought X for Y (expense) — also stock handled separately but allow expense too
+    if (m) return saveMoney('expense', parseNum(m[1]), m[2].trim().replace(/[.!]/g, ''));
+    // Bought X for Y (expense); stock tracking has its own command path too.
     m = t.match(/\bbought\s+(.+?)\s+for\s+[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const cat = 'bought ' + m[1].trim(); const r = A.logMoney(s, { kind: 'expense', amount: parseNum(m[2]), category: cat }); return reply(r.text, [{ kind: 'money', id: r.id }]); }
+    if (m) return saveMoney('expense', parseNum(m[2]), `bought ${m[1].trim()}`);
 
-    // income words
+    // Income words
     m = t.match(/(?:salary|came in|credited|received|got|earned|income)\s+(?:about\s+)?[₹$€£]?\s*([\d.,]+)/i);
-    if (m) { const cat = /salary/.test(low) ? 'salary' : /(?:came in|credited|received)/.test(low) ? 'received' : 'income'; const r = A.logMoney(s, { kind: 'income', amount: parseNum(m[1]), category: cat }); return reply(r.text, [{ kind: 'money', id: r.id }]); }
+    if (m) {
+      const category = /salary/.test(low) ? 'salary' : /(?:came in|credited|received)/.test(low) ? 'received' : 'income';
+      return saveMoney('income', parseNum(m[1]), category);
+    }
 
     return null;
   }
@@ -766,27 +1145,38 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     if (!name && unit && /egg/i.test(num[2])) name = 'Eggs';
     if (!name) return isUse ? reply('Used how much of which item?') : null;
     const r = A.adjustStock(s, { name, delta: isUse ? -qty : qty, unit });
-    return reply(r.text, [{ kind: 'stockItem', id: r.id }]);
+    return saveFailure(r, 'that stock item') || reply(r.text, [{ kind: 'stockItem', id: r.id }]);
   }
 
   _tryHealth(low, t) {
     const s = this.store;
+    const saveHealth = (text, confirmation) => {
+      const record = A.logJournal(s, text, '');
+      const failed = saveFailure(record, 'that journal entry'); if (failed) return failed;
+      this.ctx.push('journal', record.id, 'journal entry');
+      return reply(confirmation, [{ kind: 'journal', id: record.id }]);
+    };
     const medKw = /(paracetamol|panadol|aspirin|disprin|insulin|vitamin|tablet|pill|medicine|medication|dolo|ibuprofen|metformin|crocin|antibiotic|levo)/i;
     if (medKw.test(t) && /\b(took|had|taken|took my)\b/.test(low)) {
       const tm = timeFromText(t);
       const when = tm ? tm.label : '';
       const name = cleanName((t.match(/(?:took|had|taken)\s+(?:my\s+|a\s+|one\s+)?([a-z][a-z0-9\- ]*?)\s*(?:at\s+[\d:.]+(?:am|pm)?\s*)?$/i) || [])[1]) || 'Medicine';
-      const rec = s.addSync('journal', { text: `Took ${name}` + (when ? ' at ' + when : ''), mood: '', date: new Date().toISOString() });
-      return reply(`Logged ${name} taken${when ? ' at ' + when : ' today'}.`, [{ kind: 'journal', id: rec.id }]);
+      return saveHealth(`Took ${name}${when ? ` at ${when}` : ''}`, `Logged ${name} taken${when ? ` at ${when}` : ' today'}.`);
     }
     let m = t.match(/blood pressure\s*[:=]?\s*([\d]{2,3})\s*\/\s*([\d]{2,3})/i);
-    if (m) { const v = `${m[1]}/${m[2]}`; const rec = s.addSync('journal', { text: `Blood pressure ${v}`, mood: '' }); return reply(`Logged BP ${v}.`, [{ kind: 'journal', id: rec.id }]); }
+    if (m) {
+      const value = `${m[1]}/${m[2]}`;
+      return saveHealth(`Blood pressure ${value}`, `Logged BP ${value}.`);
+    }
     m = t.match(/weight\s*(?:is|=)?\s*([\d.]+)\s*(kg|kgs?|kilos?)?/i);
-    if (m) { const rec = s.addSync('journal', { text: `Weight ${m[1]} kg` }); return reply(`Logged weight ${m[1]} kg.`, [{ kind: 'journal', id: rec.id }]); }
+    if (m) return saveHealth(`Weight ${m[1]} kg`, `Logged weight ${m[1]} kg.`);
     m = t.match(/slept\s+([\d.]+)\s*(hours?|hrs?)?/i);
-    if (m) { const rec = s.addSync('journal', { text: `Slept ${m[1]} hours` }); return reply(`Logged sleep ${m[1]}h.`, [{ kind: 'journal', id: rec.id }]); }
+    if (m) return saveHealth(`Slept ${m[1]} hours`, `Logged sleep ${m[1]}h.`);
     m = t.match(/(?:walked|took|did)\s+([\d,]{3,})\s*(?:steps?)?/i) || t.match(/([\d,]{3,})\s*steps?\b/i);
-    if (m && /walk|step|pace/.test(low)) { const rec = s.addSync('journal', { text: `Walked ${parseNum(m[1])} steps` }); return reply(`Logged ${(+m[1].replace(/,/g, '')).toLocaleString()} steps.`, [{ kind: 'journal', id: rec.id }]); }
+    if (m && /walk|step|pace/.test(low)) {
+      const steps = parseNum(m[1]);
+      return saveHealth(`Walked ${steps} steps`, `Logged ${(+m[1].replace(/,/g, '')).toLocaleString()} steps.`);
+    }
     return null;
   }
 
@@ -794,21 +1184,104 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     const s = this.store;
     const H = 'yoga|exercise|workout|gym|meditation|reading|read|piano|guitar|coding|code|study|running|run|swimming|swim|push.?ups|journal|walk|stretching|writing|drawing';
     let m = t.match(new RegExp('(?:did|done|finished|completed|practiced|practised|did my|logged|went to|started)\\s+(?:my\\s+|the\\s+|daily\\s+|today\\s+)?(' + H + ')', 'i'));
-    if (m) { const nm = m[1].toLowerCase() === 'read' ? 'Reading' : m[1]; const r = A.logHabit(s, nm); this.ctx.push('habit', r.id, nm); return reply(r.text, [{ kind: 'habit', id: r.id }]); }
+    if (m) {
+      const name = m[1].toLowerCase() === 'read' ? 'Reading' : m[1]; const r = A.logHabit(s, name);
+      const failed = saveFailure(r, 'that habit'); if (failed) return failed;
+      this.ctx.push('habit', r.id, name); return reply(r.text, [{ kind: 'habit', id: r.id }]);
+    }
     m = t.match(new RegExp('(' + H + ')\\s+(?:done|did|finished|completed|logged)', 'i'));
-    if (m) { const nm = m[1].toLowerCase() === 'read' ? 'Reading' : m[1]; const r = A.logHabit(s, nm); return reply(r.text, [{ kind: 'habit', id: r.id }]); }
+    if (m) {
+      const name = m[1].toLowerCase() === 'read' ? 'Reading' : m[1]; const r = A.logHabit(s, name);
+      const failed = saveFailure(r, 'that habit'); if (failed) return failed;
+      this.ctx.push('habit', r.id, name); return reply(r.text, [{ kind: 'habit', id: r.id }]);
+    }
     m = t.match(/(?:read|studied)\s+([\d]+)\s+pages?\b/i);
-    if (m) { const r = A.logHabit(s, 'Reading'); return reply(r.text, [{ kind: 'habit', id: r.id }]); }
+    if (m) {
+      const r = A.logHabit(s, 'Reading');
+      const failed = saveFailure(r, 'that habit'); if (failed) return failed;
+      this.ctx.push('habit', r.id, 'Reading'); return reply(r.text, [{ kind: 'habit', id: r.id }]);
+    }
     return null;
   }
 
   _tryJournal(low, t) {
     if (/^(feeling|i feel|i'm feeling|i am feeling|i felt|felt|today was|today i|had a great|grateful|i had|good day|bad day|slept)\b/i.test(low) && !/\b(weight|blood pressure|steps)\b/.test(low)) {
-      const rec = this.store.addSync('journal', { text: t.replace(/[.!]+$/, ''), mood: moodOf(low) });
-      return reply('Journal entry saved.', [{ kind: 'journal', id: rec.id }]);
+      const record = A.logJournal(this.store, t.replace(/[.!]+$/, ''), moodOf(low));
+      return saveFailure(record, 'that journal entry') || reply('Journal entry saved.', [{ kind: 'journal', id: record.id }]);
     }
     return null;
   }
+}
+
+// Parse "John “I’ll be there”", "John: hello", or a known contact prefix.
+// This is intentionally deterministic: if a recipient cannot be identified, all
+// remaining text is treated as the recipient instead of silently sending it wrong.
+function splitRecipientMessage(raw, findPeople) {
+  const input = String(raw || '').trim().replace(/[?!.]+$/, '');
+  if (!input) return { target: '', message: '' };
+  let match = input.match(/^(.+?)\s*(?:[:]|\b(?:saying|that|with message)\b)\s*[“"'](.+?)[”"']\s*$/i)
+    || input.match(/^(.+?)\s*(?:[:]|\b(?:saying|that|with message)\b)\s*(.+)$/i)
+    || input.match(/^(.+?)\s+[“"'](.+?)[”"']\s*$/);
+  if (match) return { target: match[1].trim(), message: String(match[2] || '').trim() };
+
+  // Email addresses and phone numbers are unambiguous enough to split at the
+  // first whitespace following the address/number.
+  match = input.match(/^([^\s@]+@[^\s@]+\.[^\s@]+)(?:\s+(.+))?$/i)
+    || input.match(/^(\+?\d[\d\s().-]{6,})(?:\s+(.+))?$/);
+  if (match) return { target: match[1].trim(), message: String(match[2] || '').trim() };
+
+  const words = input.split(/\s+/);
+  for (let length = words.length; length >= 1; length -= 1) {
+    const candidate = words.slice(0, length).join(' ');
+    const people = findPeople(candidate);
+    // Require an exact/strong name-ish match for splitting; a fuzzy partial
+    // should remain a clarification rather than losing part of the message.
+    if (people.length === 1) {
+      const person = people[0];
+      const names = [person.name, ...(Array.isArray(person.aliases) ? person.aliases : [])].map(value => normStr(value));
+      if (names.includes(normStr(candidate))) return { target: candidate, message: words.slice(length).join(' ').replace(/^(?:about|re:)\s*/i, '').trim() };
+    }
+  }
+  return { target: input, message: '' };
+}
+
+function cleanTaskTitle(value, recurrence) {
+  let title = String(value || '');
+  if (recurrence) {
+    title = title.replace(/\s+(?:every|each)\s+.+$/i, '');
+    title = title.replace(/\s+(?:daily|weekly|monthly|yearly)\b.*$/i, '');
+  }
+  return title.trim() || 'Task';
+}
+
+function cleanEventTitle(value) {
+  let title = String(value || '')
+    .replace(/^(?:add|create|schedule|book|set)\s+(?:an?\s+)?/i, '')
+    .replace(/\s+(?:on\s+)?\d{4}-\d{1,2}-\d{1,2}\b.*$/i, '')
+    .replace(/\s+(?:on\s+)?\d{1,2}[/.\-]\d{1,2}(?:[/.\-]\d{2,4})?\b.*$/i, '')
+    .replace(/\s+(?:on\s+)?(?:tomorrow|today|tonight|day after tomorrow|next\s+\w+|this\s+\w+)\b.*$/i, '')
+    .replace(/\s+(?:on\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}.*$/i, '')
+    .replace(/\s+(?:at|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b.*$/i, '')
+    .replace(/[—–-]\s*(?:note|notes)\s*:.+$/i, '')
+    .trim();
+  return cap(title.replace(/\s+/g, ' '));
+}
+
+function eventLocationFromText(value) {
+  const text = String(value || '');
+  // Prefer the second "at" in "tomorrow at 3pm at Main Clinic".
+  let explicit = text.match(/\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+at\s+([^,;—–]+?)(?:\s+(?:on|tomorrow|today|next|this)\b|\s*$)/i);
+  if (!explicit) explicit = text.match(/(?:\blocation\s*(?:is|:)|\bat)\s+([^,;—–]+?)(?:\s+(?:on|tomorrow|today|next|this)\b|\s*$)/i);
+  if (!explicit) return '';
+  const candidate = explicit[1].trim();
+  // "at 7pm" is a time, never a location.
+  if (/^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(candidate)) return '';
+  return candidate.length > 2 ? candidate : '';
+}
+
+function eventNotesFromText(value) {
+  const match = String(value || '').match(/(?:[—–]|\bnotes?\s*:)\s*(.+)$/i);
+  return match ? match[1].trim() : '';
 }
 
 // helper functions
@@ -816,6 +1289,9 @@ function cleanRemTitle(raw) {
   let s = String(raw || '').trim();
   const tail = [
     /\s+every\s+[\w\s]*$/i,
+    /\s+(?:on\s+)?\d{4}-\d{1,2}-\d{1,2}$/i,
+    /\s+(?:on\s+)?\d{1,2}[/.\-]\d{1,2}(?:[/.\-]\d{2,4})?$/i,
+    /\s+(?:on\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?$/i,
     /\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i,
     /\s+(?:tonight|tomorrow|today|noon|midnight)$/i,
     /\s+this\s+(?:morning|afternoon|evening|weekend|week)$/i,
@@ -838,9 +1314,25 @@ function moodOf(low){ if(/(great|happy|amazing|fantastic|good day|wonderful)/.te
 function normUnit(u){ if(!u) return 'unit'; const l=u.toLowerCase(); if(/kg|kilo/.test(l))return 'kg'; if(/g\b|gm|gram/.test(l))return 'g'; if(/ml/.test(l))return 'ml'; if(/litre|liter|^l$/.test(l))return 'L'; if(/packet/.test(l))return 'packet'; if(/piece/.test(l))return 'piece'; if(/bag/.test(l))return 'bag'; if(/bottle/.test(l))return 'bottle'; if(/box/.test(l))return 'box'; if(/egg/.test(l))return 'egg'; if(/scoop/.test(l))return 'scoop'; if(/can/.test(l))return 'can'; if(/jar/.test(l))return 'jar'; if(/bar/.test(l))return 'bar'; return 'unit'; }
 // Stock match groups: [full, num, unit, innerUnit, name]. Name is the last group.
 
-function splitDue(body){
-  const pats=[/\s+(?:by|before|due)\s+/i,/\s+at\s+(?:noon|midnight|\d[\d:.]*(?:\s*(?:am|pm))?)/i,/\s+tomorrow\b/i,/\s+tonight\b/i,/\s+this\s+(?:weekend|week|evening|morning|afternoon)\b/i,/\s+next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,/\s+next\s+(?:week|month|day)\b/i,/\s+in\s+\d+\s+(?:min|minute|hour|day|week)s?\b/i,/\s+(?:on|for)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i];
-  let cut=-1; for(const p of pats){const m=p.exec(body); if(m&&(cut<0||m.index<cut))cut=m.index;}
-  if(cut<0) return {title: body.trim(), due:''};
-  return {title: body.slice(0,cut).trim().replace(/\s+(?:for|on|to)\s*$/i,''), due: body.slice(cut).trim()};
+function splitDue(body) {
+  const month = '(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)';
+  const literalDate = `(?:${month}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:[\\s,]+\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+${month}(?:[\\s,]+\\d{4})?|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}[/.\\-]\\d{1,2}(?:[/.\\-]\\d{2,4})?)`;
+  const pats = [
+    /\s+(?:by|before|due)\s+/i,
+    /\s+at\s+(?:noon|midnight|\d[\d:.]*(?:\s*(?:am|pm))?)/i,
+    /\s+tomorrow\b/i, /\s+tonight\b/i,
+    /\s+this\s+(?:weekend|week|evening|morning|afternoon)\b/i,
+    /\s+next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+    /\s+next\s+(?:week|month|day)\b/i,
+    /\s+in\s+\d+\s+(?:min|minute|hour|day|week)s?\b/i,
+    /\s+(?:on|for)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+    new RegExp(`\\s+(?:on\\s+)?${literalDate}\\b`, 'i')
+  ];
+  let cut = -1;
+  for (const pattern of pats) {
+    const match = pattern.exec(body);
+    if (match && (cut < 0 || match.index < cut)) cut = match.index;
+  }
+  if (cut < 0) return { title: body.trim(), due: '' };
+  return { title: body.slice(0, cut).trim().replace(/\s+(?:for|on|to)\s*$/i, ''), due: body.slice(cut).trim() };
 }

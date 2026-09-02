@@ -48,6 +48,39 @@ test('reminder asks for missing time then completes', async () => {
   assert.equal(store.list('reminder').length, 1);
   const rem = store.list('reminder')[0];
   assert.equal(new Date(rem.at).getHours(), 19);
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  assert.equal(new Date(rem.at).getDate(), tomorrow.getDate(), 'a time-only follow-up retains the requested tomorrow date');
+});
+
+test('a one-time reminder does not silently turn a past clock into an immediate alert', async () => {
+  const now = new Date();
+  const hour = now.getHours() % 12 || 12;
+  const suffix = now.getHours() >= 12 ? 'pm' : 'am';
+  const response = await say(`remind me to call mom today at ${hour}${suffix}`);
+  assert.match(response.text, /already passed/i);
+  assert.equal(store.list('reminder').length, 0);
+});
+
+test('reminder storage failures are reported without returning a broken card', async () => {
+  const addSync = store.addSync.bind(store);
+  store.addSync = (kind, value) => kind === 'reminder' ? null : addSync(kind, value);
+  const response = await say('remind me to call mom tomorrow at 7pm');
+  assert.match(response.text, /Couldn’t save that reminder/i);
+  assert.equal(response.cards.length, 0);
+  assert.equal(store.list('reminder').length, 0);
+});
+
+test('pending reminder and event time prompts can be retried or cancelled', async () => {
+  await say('remind me to call John tomorrow');
+  let response = await say('after lunch sometime');
+  assert.match(response.text, /Try again/i);
+  response = await say('7pm');
+  assert.equal(store.list('reminder').length, 1, 'an invalid answer keeps the reminder prompt active');
+
+  await say('schedule dentist appointment');
+  response = await say('cancel');
+  assert.match(response.text, /did not save that event/i);
+  assert.equal(store.list('event').length, 0);
 });
 
 test('task add with by friday', async () => {
@@ -65,6 +98,26 @@ test('task imperative submit assignment', async () => {
   assert.match(t.title, /submit the assignment/i);
   const exp = new Date(); exp.setDate(exp.getDate() + 1);
   assert.equal(new Date(t.due).getDate(), exp.getDate());
+});
+
+test('literal calendar dates become dates rather than task/reminder titles', async () => {
+  await say('add task file taxes on March 12, 2027 at 3pm');
+  const task = store.list('task')[0];
+  assert.equal(task.title, 'File taxes');
+  assert.equal(new Date(task.due).getFullYear(), 2027);
+  assert.equal(new Date(task.due).getMonth(), 2);
+  assert.equal(new Date(task.due).getDate(), 12);
+  assert.equal(new Date(task.due).getHours(), 15);
+
+  await say('remind me to renew passport on 2027-03-12 at 3pm');
+  const reminder = store.list('reminder')[0];
+  assert.equal(reminder.title, 'Renew passport');
+  assert.equal(new Date(reminder.at).getFullYear(), 2027);
+
+  await say('schedule dentist appointment on 2027-03-12 at 3pm');
+  const event = store.list('event')[0];
+  assert.equal(event.title, 'Dentist appointment');
+  assert.equal(new Date(event.at).getFullYear(), 2027);
 });
 
 test('private note saved', async () => {

@@ -3,8 +3,6 @@ export function uid() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
-/** Set an absolute ceiling on how old/random an id prefix can be avoided; ids are only local. */
-
 /** Money formatting with explicit sign and locale. */
 export function formatMoney(n, { currency = '₹', locale = 'en-IN', cents = false } = {}) {
   if (n == null || Number.isNaN(+n)) return '';

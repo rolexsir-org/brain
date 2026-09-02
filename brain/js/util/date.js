@@ -25,8 +25,25 @@ export function endOfDay(d) {
   return x;
 }
 export function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-export function addMonths(d, n) { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; }
-export function addYears(d, n) { const x = new Date(d); x.setFullYear(x.getFullYear() + n); return x; }
+function daysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
+// Set the day to one before changing a month/year. JavaScript otherwise turns
+// January 31 + one month into early March instead of the last valid February day.
+export function addMonths(d, n) {
+  const x = new Date(d);
+  const day = x.getDate();
+  x.setDate(1);
+  x.setMonth(x.getMonth() + n);
+  x.setDate(Math.min(day, daysInMonth(x.getFullYear(), x.getMonth())));
+  return x;
+}
+export function addYears(d, n) {
+  const x = new Date(d);
+  const day = x.getDate();
+  x.setDate(1);
+  x.setFullYear(x.getFullYear() + n);
+  x.setDate(Math.min(day, daysInMonth(x.getFullYear(), x.getMonth())));
+  return x;
+}
 export function daysBetween(a, b) {
   const A = startOfDay(a).getTime(), B = startOfDay(b).getTime();
   return Math.round((B - A) / 86400000);
@@ -115,11 +132,15 @@ export function dateLiteralFromText(text, ref = new Date()) {
     if (year == null && cand < today) cand.setFullYear(y + 1);
     return startOfDay(cand);
   }
-  // month-name first: "march 12" / "12 march" / "12th march"
-  m = t.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b[\s.,-]+(\d{1,2})(?:st|nd|rd|th)?\b/);
-  if (m && MONTHS[m[1]] != null) return literal(MONTHS[m[1]], +m[2], null);
-  m = t.match(/\b(\d{1,2})(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b/);
-  if (m && MONTHS[m[2]] != null) return literal(MONTHS[m[2]], +m[1], null);
+  // month-name first: "march 12", "march 12 2027", "12 march".
+  m = t.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b[\s.,-]+(\d{1,2})(?:st|nd|rd|th)?(?:[\s,]+(\d{4}))?\b/);
+  if (m && MONTHS[m[1]] != null) return literal(MONTHS[m[1]], +m[2], m[3] ? +m[3] : null);
+  m = t.match(/\b(\d{1,2})(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)(?:[\s,]+(\d{4}))?\b/);
+  if (m && MONTHS[m[2]] != null) return literal(MONTHS[m[2]], +m[1], m[3] ? +m[3] : null);
+  // ISO must precede the shorter numeric matcher so the latter cannot consume
+  // the trailing “03-12” portion of “2026-03-12” and lose its year.
+  m = t.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (m) return literal(+m[2] - 1, +m[3], +m[1]);
   // numeric d/m(/y)
   m = t.match(/\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\b/);
   if (m) {
@@ -129,12 +150,9 @@ export function dateLiteralFromText(text, ref = new Date()) {
     else if (b > 12) { day = b; month = a - 1; }
     else { day = a; month = b - 1; } // ambiguous like 5/6 -> treat as day/month
     if (month < 0 || month > 11 || day < 1 || day > 31) return null;
-    const y = m[3] ? +m[3] : null;
+    const y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : null;
     return literal(month, day, y);
   }
-  // ISO yyyy-mm-dd
-  m = t.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (m) return literal(+m[2] - 1, +m[3], +m[1]);
   return null;
 }
 
@@ -206,6 +224,10 @@ export function resolveMoment(text, now = new Date()) {
   const implicit = implicitTime(text);
   const rel = relativeFromText(text, now);
   if (rel.matched) {
+    // An explicit wall-clock qualifier wins over the incidental current clock
+    // carried by “in 2 days”, so “in 2 days at 3pm” is actually 3pm.
+    if (time) rel.date.setHours(time.h, time.min, 0, 0);
+    else if (implicit) rel.date.setHours(implicit.h, implicit.min, 0, 0);
     return { date: rel.date, matched: true, hasTime: !!time };
   }
   const dw = dateWordFromText(text, now);
@@ -251,6 +273,12 @@ export function parseRecur(text, now = new Date()) {
   const t = String(text || '').toLowerCase();
   const tstr = clockString(t);
 
+  // Read numeric cadences before the one-word shortcuts. The interval is
+  // bounded here as well as in persistence validation, so a malformed command
+  // cannot become an unbounded recurrence scan.
+  const dayCadence = t.match(/\bevery\s+(\d+)\s*days?\b/);
+  if (dayCadence) return { freq: RECUR.daily, interval: Math.max(1, Math.min(60, +dayCadence[1] || 1)), time: tstr };
+  if (/\bevery\s+other\s+day\b/.test(t)) return { freq: RECUR.daily, interval: 2, time: tstr };
   if (/\bevery (?:day|morning|evening|night)\b|\bdaily\b/.test(t)) {
     return { freq: RECUR.daily, interval: 1, time: tstr };
   }
@@ -260,17 +288,23 @@ export function parseRecur(text, now = new Date()) {
   if (/\bevery weekend\b/.test(t)) {
     return { freq: RECUR.weekly, interval: 1, days: [0, 6], time: tstr };
   }
+  // Every-N cadence is read before named days, so "every 2 weeks on Monday"
+  // does not accidentally become a weekly rule.
+  const iv = t.match(/\bevery\s+(\d+)\s*(weeks?|months?|years?)\b/);
   // named days list
   const dayNames = Object.keys(WD);
   const foundDays = [];
   for (const d of dayNames) if (t.includes(d)) foundDays.push(WD[d]);
-  if (foundDays.length && /every|each|weekly/.test(t)) {
-    return { freq: RECUR.weekly, interval: 1, days: [...new Set(foundDays)], time: tstr };
+  // A named weekday is meaningful with a weekly cadence. Do not silently turn
+  // “every 2 months on Monday” into weekly: the supported monthly rule remains
+  // monthly and the UI can show its concrete monthly date.
+  if (foundDays.length && /every|each|weekly/.test(t) && (!iv || iv[2].startsWith('week'))) {
+    const interval = iv && iv[2].startsWith('week') ? Math.max(1, Math.min(60, +iv[1] || 1)) : 1;
+    return { freq: RECUR.weekly, interval, days: [...new Set(foundDays)], time: tstr };
   }
   // every N weeks/months/years
-  const iv = t.match(/\bevery\s+(\d+)\s*(weeks?|months?|years?)\b/);
   if (iv) {
-    const n = +iv[1], unit = iv[2];
+    const n = Math.max(1, Math.min(60, +iv[1] || 1)), unit = iv[2];
     if (unit.startsWith('week')) return { freq: RECUR.weekly, interval: n, days: [now.getDay()], time: tstr };
     if (unit.startsWith('month')) return { freq: RECUR.monthly, interval: n, dayOfMonth: now.getDate(), time: tstr };
     return { freq: RECUR.yearly, interval: n, monthOfYear: now.getMonth(), dayOfMonth: now.getDate(), time: tstr };
@@ -284,64 +318,79 @@ export function parseRecur(text, now = new Date()) {
   return null;
 }
 
-/** Turn a spec.time (either 'HH:MM' string or {h,min}) into {h,min}. */
+/** Turn a recurrence clock into a validated local wall-clock time. */
 function specTime(spec) {
-  const raw = spec.time;
-  if (raw && typeof raw === 'object') return { h: raw.h, min: raw.min };
+  const raw = spec && spec.time;
+  if (raw && typeof raw === 'object' && Number.isInteger(raw.h) && Number.isInteger(raw.min)) return { h: raw.h, min: raw.min };
   if (typeof raw === 'string') {
-    const p = raw.split(':').map(Number);
-    if (Number.isInteger(p[0]) && p[0] >= 0 && p[0] < 24 && Number.isInteger(p[1]) && p[1] >= 0 && p[1] < 60) return { h: p[0], min: p[1] };
+    const parts = raw.split(':').map(Number);
+    if (Number.isInteger(parts[0]) && parts[0] >= 0 && parts[0] < 24 && Number.isInteger(parts[1]) && parts[1] >= 0 && parts[1] < 60) return { h: parts[0], min: parts[1] };
   }
   return { h: 9, min: 0 };
 }
 
+function calendarDayNumber(date) {
+  // UTC noon gives a stable integer across local DST changes.
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+}
+function startOfWeek(date) {
+  const result = startOfDay(date);
+  result.setDate(result.getDate() - result.getDay());
+  return result;
+}
+function monthIndex(date) { return date.getFullYear() * 12 + date.getMonth(); }
+function validDayOfMonth(date, wanted) { return date.getDate() === wanted; }
+
 /**
- * Compute the next occurrence (a concrete Date) for a recurrence spec strictly after `from`.
- * spec: {freq, interval, days?, time?, anchor?(date)} — time as 'HH:MM' string or {h,min}.
+ * Whether `date` is an occurrence according to a recurrence and anchor. The
+ * anchor makes "every 2 weeks" stable after reload rather than accidentally
+ * changing cadence based on the day Brain happens to be open.
+ */
+export function recurrenceMatches(spec, date = new Date(), anchor = null) {
+  if (!spec || !(date instanceof Date) || Number.isNaN(date.getTime())) return false;
+  const interval = Math.max(1, Number(spec.interval) || 1);
+  const day = startOfDay(date);
+  const anchorDate = startOfDay(anchor || spec.anchor || date);
+  if (day < anchorDate) return false;
+  if (spec.freq === RECUR.daily) {
+    return (calendarDayNumber(day) - calendarDayNumber(anchorDate)) % interval === 0;
+  }
+  if (spec.freq === RECUR.weekly) {
+    const days = Array.isArray(spec.days) && spec.days.length ? spec.days : [anchorDate.getDay()];
+    if (!days.includes(day.getDay())) return false;
+    const weeks = Math.round((calendarDayNumber(startOfWeek(day)) - calendarDayNumber(startOfWeek(anchorDate))) / 7);
+    return weeks >= 0 && weeks % interval === 0;
+  }
+  if (spec.freq === RECUR.monthly) {
+    const wanted = Number(spec.dayOfMonth || anchorDate.getDate());
+    return validDayOfMonth(day, wanted) && (monthIndex(day) - monthIndex(anchorDate)) % interval === 0;
+  }
+  if (spec.freq === RECUR.yearly) {
+    const wantedMonth = spec.monthOfYear == null ? anchorDate.getMonth() : Number(spec.monthOfYear);
+    const wantedDay = Number(spec.dayOfMonth || anchorDate.getDate());
+    return day.getMonth() === wantedMonth && validDayOfMonth(day, wantedDay) && (day.getFullYear() - anchorDate.getFullYear()) % interval === 0;
+  }
+  return false;
+}
+
+/**
+ * Compute the next recurrence strictly after `from`, preserving local clock
+ * semantics through timezone/DST changes. The scan is bounded to avoid a bad
+ * imported rule looping forever.
  */
 export function nextOccurrence(spec, from = new Date()) {
-  if (!spec) return null;
+  if (!spec || !(from instanceof Date) || Number.isNaN(from.getTime())) return null;
   const time = specTime(spec);
-  const iv = spec.interval || 1;
-  let base = from;
-  const limit = 800; // safety against infinite loops on impossible specs
-  if (spec.freq === RECUR.daily) {
-    let d = startOfDay(base);
-    for (let i = 0; i < limit; i++) {
-      const cand = new Date(d); cand.setHours(time.h, time.min, 0, 0);
-      if (cand > from) return cand;
-      d = addDays(d, iv);
+  const anchor = spec.anchor ? new Date(spec.anchor) : from;
+  let day = startOfDay(from);
+  const limit = 366 * 65; // supports the maximum validated yearly interval
+  for (let index = 0; index < limit; index += 1) {
+    if (recurrenceMatches(spec, day, anchor)) {
+      const candidate = new Date(day);
+      candidate.setHours(time.h, time.min, 0, 0);
+      if (candidate > from) return candidate;
     }
-  } else if (spec.freq === RECUR.weekly) {
-    const days = (spec.days && spec.days.length) ? [...spec.days].sort((a, b) => a - b) : [base.getDay()];
-    let d = startOfDay(base);
-    for (let i = 0; i < limit; i++) {
-      if (days.includes(d.getDay())) {
-        const cand = new Date(d); cand.setHours(time.h, time.min, 0, 0);
-        if (cand > from) return cand;
-      }
-      d = addDays(d, 1);
-    }
-  } else if (spec.freq === RECUR.monthly) {
-    const day = spec.dayOfMonth || from.getDate();
-    let d = startOfDay(base);
-    d.setDate(1);
-    for (let i = 0; i < limit; i++) {
-      const cand = new Date(d.getFullYear(), d.getMonth(), day, time.h, time.min, 0, 0);
-      if (cand.getDate() === day) { // valid (e.g., not Feb 30)
-        if (cand > from) return cand;
-      }
-      d.setMonth(d.getMonth() + iv);
-    }
-  } else if (spec.freq === RECUR.yearly) {
-    const mon = spec.monthOfYear != null ? spec.monthOfYear : from.getMonth();
-    const day = spec.dayOfMonth != null ? spec.dayOfMonth : from.getDate();
-    let y = from.getFullYear();
-    for (let i = 0; i < limit; i++) {
-      const cand = new Date(y, mon, day, time.h, time.min, 0, 0);
-      if (cand > from && cand.getMonth() === mon && cand.getDate() === day) return cand;
-      y += iv;
-    }
+    day = addDays(day, 1);
   }
   return null;
 }

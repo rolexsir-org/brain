@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeRecord, COLLECTIONS } from '../js/store/validate.js';
+import { sanitizeRecord, COLLECTIONS, isSafeImageDataUrl } from '../js/store/validate.js';
 
 test('sanitizeRecord drops unknown/injected keys', () => {
   const r = sanitizeRecord('note', {
@@ -54,6 +54,12 @@ test('recur sanitize accepts string time, rejects bad', () => {
   assert.equal(bad.recur, null);
   const week = sanitizeRecord('reminder', { title: 'x', recur: { freq: 'weekly', days: [9, 1, 1], interval: 1 } });
   assert.deepEqual(week.recur.days, [1]);
+});
+
+test('photo data URLs require both a safe MIME type and a plausible raster header', () => {
+  assert.equal(isSafeImageDataUrl(`data:image/jpeg;base64,/9j/${'A'.repeat(120)}`), true);
+  assert.equal(isSafeImageDataUrl(`data:image/jpeg;base64,${'A'.repeat(124)}`), false);
+  assert.equal(isSafeImageDataUrl('data:text/html;base64,PGgxPkhlbGxvPC9oMT4='), false);
 });
 
 test('every collection is sanitizable', () => {
