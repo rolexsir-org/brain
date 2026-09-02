@@ -1,234 +1,183 @@
-// Inline entity cards rendered into the chat. All DOM is built via the safe
-// nodes factory (never innerHTML with user data). Actions mutate the store and
-// then call ctx.refresh() to re-render.
+// Inline entity cards. Cards do not mutate state themselves: every interaction
+// emits a request into Brain's universal action dispatcher. That keeps chat,
+// notification actions, menu actions, and cards consistent and testable.
 
 import { nodes as E, formatMoney, todayKey } from '../util/util.js';
 import { fmtHM } from '../util/date.js';
+import { availableActions, ACTION } from '../actions/system.js';
+import { isSafeImageDataUrl } from '../store/validate.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function humanDate(ctx, iso) {
   if (!iso) return '';
-  const d = new Date(iso);
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const d2 = new Date(d); d2.setHours(0, 0, 0, 0);
-  const diff = Math.round((d2 - today) / 86400000);
+  const day = new Date(date); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((day - today) / 86400000);
   let prefix = '';
-  if (diff === 0) prefix = 'today'; else if (diff === 1) prefix = 'tomorrow'; else if (diff === -1) prefix = 'yesterday';
+  if (diff === 0) prefix = 'today';
+  else if (diff === 1) prefix = 'tomorrow';
+  else if (diff === -1) prefix = 'yesterday';
   else if (diff > 1 && diff < 30) prefix = `in ${diff} days`;
-  return (prefix ? prefix + ' · ' : '') + (MONTHS[d.getMonth()] + ' ' + d.getDate() + (d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''));
+  return `${prefix ? `${prefix} · ` : ''}${MONTHS[date.getMonth()]} ${date.getDate()}${date.getFullYear() !== today.getFullYear() ? ` ${date.getFullYear()}` : ''}`;
 }
 
 export function kindIcon(kind) {
-  const m = { task: '✅', reminder: '🔔', note: '📝', person: '👤', money: '💰', debt: '💸', stockItem: '📦', habit: '🔥', journal: '📔', event: '📅', photo: '📷' };
-  return m[kind] || '•';
+  const icons = { task: '✅', reminder: '🔔', note: '📝', person: '👤', money: '💰', debt: '💸', stockItem: '📦', habit: '🔥', journal: '📔', event: '📅', photo: '📷' };
+  return icons[kind] || '•';
 }
 
-function mini(label, cls, onClick) {
-  const b = E.button({ class: 'mini' + (cls ? ' ' + cls : ''), type: 'button' }, label);
-  if (onClick) b.addEventListener('click', onClick);
-  return b;
+function actionClass(action) {
+  if ([ACTION.TASK_COMPLETE, ACTION.REMINDER_COMPLETE, ACTION.HABIT_LOG, ACTION.PHOTO_VIEW].includes(action.id)) return 'g';
+  if ([ACTION.RECORD_DELETE, ACTION.STOCK_BUMP].includes(action.id) && (action.id !== ACTION.STOCK_BUMP || action.args.delta < 0)) return 'r';
+  return '';
 }
 
-/** A device-action button routed through the universal action system. */
-function dev(ctx, label, id, args, cls) {
-  return mini(label, cls || '', () => { if (ctx.runAction) ctx.runAction({ id, label, args }); });
+function actionButton(ctx, action) {
+  const label = String(action.label || 'Action');
+  const button = E.button({
+    class: `mini ${actionClass(action)}`.trim(),
+    type: 'button',
+    'aria-label': label
+  }, label);
+  button.addEventListener('click', async event => {
+    event.preventDefault();
+    if (button.disabled || typeof ctx.runAction !== 'function') return;
+    // A fast double-tap must not issue two mutations (or two external handoffs)
+    // before the card has a chance to re-render.
+    button.disabled = true;
+    try { await ctx.runAction(action); } catch {} finally { button.disabled = false; }
+  });
+  return button;
 }
-const hasEmail = e => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-const hasAddr = e => typeof e === 'string' && e.trim().length > 3;
 
+function validPhoto(dataUrl) { return isSafeImageDataUrl(dataUrl); }
+
+/** Render an actionable record card, or null for a removed / unavailable record. */
 export function entityCard(ctx, kind, id) {
-  const rec = ctx.store.list(kind).find(x => x.id === id);
-  if (!rec) return null;
-  const card = E.div({ class: 'card' });
-  const head = E.div({ class: 'k' }, E.span({}, kindIcon(kind)), E.span({}, kind.toUpperCase()));
-  card.append(head);
+  const record = ctx.store.list(kind).find(item => item.id === id);
+  if (!record) return null;
+  const card = E.div({ class: 'card', dataset: { cid: id } });
+  const heading = E.div({ class: 'k' }, E.span({}, kindIcon(kind)), E.span({}, kind.replace(/([A-Z])/g, ' $1').toUpperCase()));
   const meta = E.div({ class: 'meta' });
-  const acts = E.div({ class: 'act' });
+  const actions = E.div({ class: 'act' });
+  card.append(heading);
 
   switch (kind) {
-    case 'task': {
-      card.append(E.div({ class: 't' }, rec.status === 'done' ? '✓ ' + (rec.title || '') : rec.title || ''));
-      if (rec.due) meta.append('Due ' + humanDate(ctx, rec.due));
-      acts.append(rec.status !== 'done' ? mini('Done', 'g', () => { ctx.store.updateSync('task', id, { status: 'done', completedAt: new Date().toISOString() }); ctx.afterMutate(); }) :
-        mini('Reopen', '', () => { ctx.store.updateSync('task', id, { status: 'open', completedAt: null }); ctx.afterMutate(); }));
-      if (rec.due) acts.append(dev(ctx, 'Calendar', 'calendar', { title: rec.title || 'Task', start: rec.due, end: new Date(new Date(rec.due).getTime() + 3600000).toISOString() }));
-      acts.append(mini('Edit', '', () => ctx.edit('task', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('task', id); ctx.afterMutate(); }));
+    case 'task':
+      card.append(E.div({ class: 't' }, `${record.status === 'done' ? '✓ ' : ''}${record.title || 'Untitled task'}`));
+      if (record.note) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.note));
+      if (record.due) meta.append(E.div({}, `Due ${humanDate(ctx, record.due)} · ${fmtHM(new Date(record.due).getHours(), new Date(record.due).getMinutes())}`));
+      if (record.recur) meta.append(E.div({}, recurrenceText(record.recur)));
       break;
-    }
-    case 'reminder': {
-      card.append(E.div({ class: 't' }, rec.title || ''));
-      if (rec.recur) meta.append(recurText(rec.recur));
-      else if (rec.at) meta.append(humanDate(ctx, rec.at) + (rec.at ? ' · ' + fmtHM(new Date(rec.at).getHours(), new Date(rec.at).getMinutes()) : ''));
-      acts.append(mini('Done', 'g', () => { ctx.store.updateSync('reminder', id, { status: 'done' }); ctx.afterMutate(); }));
-      acts.append(mini('Snooze 10m', '', () => snooze(ctx, rec)));
-      if (rec.at) acts.append(dev(ctx, 'Calendar', 'calendar', { title: rec.title || 'Reminder', start: rec.at, end: new Date(new Date(rec.at).getTime() + 600000).toISOString() }));
-      acts.append(mini('Edit', '', () => ctx.edit('reminder', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('reminder', id); ctx.afterMutate(); }));
+    case 'reminder':
+      card.append(E.div({ class: 't' }, record.title || 'Untitled reminder'));
+      if (record.snoozedUntil) meta.append(E.div({}, `Snoozed until ${humanDate(ctx, record.snoozedUntil)} · ${fmtHM(new Date(record.snoozedUntil).getHours(), new Date(record.snoozedUntil).getMinutes())}`));
+      else if (record.recur) meta.append(recurrenceText(record.recur));
+      else if (record.at) meta.append(`${humanDate(ctx, record.at)} · ${fmtHM(new Date(record.at).getHours(), new Date(record.at).getMinutes())}`);
+      if (record.status === 'fired') meta.append(E.div({ class: 'att' }, 'Waiting for you to complete or snooze it'));
       break;
-    }
-    case 'note': {
-      card.append(E.div({ class: 't' }, (rec.private ? '🔒 ' : '') + (rec.title || 'Note')));
-      meta.append(E.div({ style: 'white-space:pre-wrap' }, rec.body || ''));
-      if (rec.private) meta.append(E.div({ class: 'att' }, 'Private — stays on this device'));
-      const body = rec.body || rec.title || '';
-      acts.append(dev(ctx, 'Share', 'share', { title: rec.title || 'Note', text: body }));
-      acts.append(dev(ctx, 'Copy', 'copy', { text: body }));
-      acts.append(mini('Edit', '', () => ctx.edit('note', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('note', id); ctx.afterMutate(); }));
+    case 'note':
+      card.append(E.div({ class: 't' }, `${record.private ? '🔒 ' : ''}${record.title || 'Note'}`));
+      meta.append(E.div({ style: 'white-space:pre-wrap' }, record.body || ''));
+      if (record.private) meta.append(E.div({ class: 'att' }, 'Private — stored only on this device'));
       break;
-    }
-    case 'photo': {
-      card.append(E.div({ class: 't' }, (rec.name || 'Photo')));
-      if (rec.width && rec.height) meta.append(`${rec.width}×${rec.height}`);
-      if (rec.dataUrl) card.append(E.img({ class: 'thumb', src: rec.dataUrl, alt: rec.name || 'photo' }));
-      acts.append(mini('View', 'g', () => ctx.viewPhoto(id)));
-      acts.append(dev(ctx, 'Share', 'share', { title: rec.name || 'Photo', text: 'Photo from Brain', files: photoFile(rec) }));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('photo', id); ctx.afterMutate(); }));
+    case 'photo':
+      card.append(E.div({ class: 't' }, record.name || 'Photo'));
+      if (record.width && record.height) meta.append(`${record.width}×${record.height}`);
+      if (validPhoto(record.dataUrl)) card.append(E.img({ class: 'thumb', src: record.dataUrl, alt: record.name || 'Saved photo', loading: 'lazy' }));
+      else meta.append(E.div({ class: 'att' }, 'Image data is unavailable. You can remove this record safely.'));
       break;
-    }
     case 'journal': {
-      card.append(E.div({ class: 't' }, (rec.mood ? moodEmoji(rec.mood) + ' ' : '') + humanDate(ctx, rec.date)));
-      const ph = rec.photoId ? ctx.store.list('photo').find(p => p.id === rec.photoId) : null;
-      if (ph && ph.dataUrl) {
-        card.append(E.img({ class: 'thumb', src: ph.dataUrl, alt: 'photo' }));
-        acts.append(mini('View photo', 'g', () => ctx.viewPhoto(ph.id)));
-      }
-      meta.append(rec.text || '');
-      acts.append(dev(ctx, 'Share', 'share', { title: 'Journal', text: rec.text || '' }));
-      acts.append(mini('Edit', '', () => ctx.edit('journal', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('journal', id); ctx.afterMutate(); }));
+      card.append(E.div({ class: 't' }, `${moodEmoji(record.mood)} ${humanDate(ctx, record.date)}`));
+      const photo = record.photoId ? ctx.store.list('photo').find(item => item.id === record.photoId) : null;
+      if (photo && validPhoto(photo.dataUrl)) card.append(E.img({ class: 'thumb', src: photo.dataUrl, alt: 'Journal attachment', loading: 'lazy' }));
+      meta.append(E.div({ style: 'white-space:pre-wrap' }, record.text || ''));
       break;
     }
-    case 'person': {
-      card.append(E.div({ class: 't' }, rec.name || ''));
-      if (rec.phone) meta.append(E.div({ class: 'contact' }, '📞 ' + rec.phone));
-      if (rec.email) meta.append(E.div({ class: 'contact' }, '✉️ ' + rec.email));
-      if (rec.address) meta.append(E.div({ class: 'contact' }, '📍 ' + rec.address));
-      if (rec.birthday) meta.append('🎂 ' + rec.birthday);
-      if (rec.relationship) meta.append(' · ' + rec.relationship);
-      if (rec.notes) meta.append(E.div({}, rec.notes));
-      // Every displayed value is actionable.
-      if (rec.phone) {
-        acts.append(dev(ctx, 'Call', 'call', { number: rec.phone }, 'g'));
-        acts.append(dev(ctx, 'WhatsApp', 'whatsapp', { number: rec.phone }, 'wa'));
-        acts.append(dev(ctx, 'Text', 'sms', { number: rec.phone }));
-        acts.append(dev(ctx, 'Copy', 'copy', { text: rec.phone }));
-      }
-      if (hasEmail(rec.email)) acts.append(dev(ctx, 'Email', 'email', { email: rec.email }));
-      if (hasAddr(rec.address)) acts.append(dev(ctx, 'Maps', 'maps', { query: rec.address }));
-      acts.append(mini('Edit', '', () => ctx.edit('person', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('person', id); ctx.afterMutate(); }));
+    case 'person':
+      card.append(E.div({ class: 't' }, record.name || 'Unnamed person'));
+      if (record.phone) meta.append(E.div({ class: 'contact' }, `📞 ${record.phone}`));
+      if (record.email) meta.append(E.div({ class: 'contact' }, `✉️ ${record.email}`));
+      if (record.address) meta.append(E.div({ class: 'contact' }, `📍 ${record.address}`));
+      if (record.instagram) meta.append(E.div({ class: 'contact' }, `📸 @${String(record.instagram).replace(/^@/, '')}`));
+      if (record.birthday) meta.append(E.div({}, `🎂 ${record.birthday}`));
+      if (record.relationship) meta.append(E.div({}, record.relationship));
+      if (record.aliases && record.aliases.length) meta.append(E.div({ class: 'att' }, `Also known as: ${record.aliases.join(', ')}`));
+      if (record.notes) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.notes));
       break;
-    }
     case 'money': {
-      const sign = rec.kind === 'income' ? '+' : '−';
-      card.append(E.div({ class: 't' }, `${sign} ${formatMoney(rec.amount, ctx.cur)}`));
-      meta.append((rec.category || rec.kind) + (rec.date ? ' · ' + humanDate(ctx, rec.date) : ''));
-      const line = `${rec.category || rec.kind}: ${sign === '+' ? 'income' : 'expense'} ${formatMoney(rec.amount, ctx.cur)}`;
-      acts.append(dev(ctx, 'Share', 'share', { title: rec.category || 'Money', text: line }));
-      acts.append(dev(ctx, 'Copy', 'copy', { text: line }));
-      acts.append(mini('Edit', '', () => ctx.edit('money', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('money', id); ctx.afterMutate(); }));
+      const sign = record.kind === 'income' ? '+' : '−';
+      card.append(E.div({ class: 't' }, `${sign} ${formatMoney(record.amount, ctx.cur || {})}`));
+      meta.append(`${record.category || record.kind}${record.date ? ` · ${humanDate(ctx, record.date)}` : ''}`);
       break;
     }
-    case 'debt': {
-      const who = rec.dir === 'they_owe_me' ? rec.person + ' owes you' : 'You owe ' + rec.person;
-      card.append(E.div({ class: 't' }, who));
-      meta.append(formatMoney(rec.amount, ctx.cur));
-      if (rec.status === 'settled') meta.append(' · settled');
-      acts.append(mini(rec.status === 'settled' ? 'Unsettle' : 'Settle', rec.status === 'settled' ? '' : 'g', () => {
-        ctx.store.updateSync('debt', id, { status: rec.status === 'settled' ? 'open' : 'settled', settledAt: rec.status === 'settled' ? null : new Date().toISOString() });
-        ctx.afterMutate();
-      }));
-      const dline = `${who}: ${formatMoney(rec.amount, ctx.cur)}`;
-      acts.append(dev(ctx, 'Copy', 'copy', { text: dline }));
-      acts.append(mini('Edit', '', () => ctx.edit('debt', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('debt', id); ctx.afterMutate(); }));
+    case 'debt':
+      card.append(E.div({ class: 't' }, record.dir === 'they_owe_me' ? `${record.person} owes you` : `You owe ${record.person}`));
+      meta.append(`${formatMoney(record.amount, ctx.cur || {})}${record.status === 'settled' ? ' · settled' : ''}`);
       break;
-    }
-    case 'stockItem': {
-      card.append(E.div({ class: 't' }, `${rec.qty} ${rec.unit} ${rec.name}`));
-      if (rec.lowThreshold != null && rec.qty <= rec.lowThreshold) meta.append('⚠️ Low');
-      acts.append(mini('+1', '', () => bump(ctx, 'stockItem', id, 1, rec.unit)));
-      acts.append(mini('−1', 'r', () => bump(ctx, 'stockItem', id, -1, rec.unit)));
-      acts.append(mini('Edit', '', () => ctx.edit('stockItem', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('stockItem', id); ctx.afterMutate(); }));
-      break;
-    }
-    case 'habit': {
-      card.append(E.div({ class: 't' }, rec.name));
-      meta.append(streak(rec.log) + ' day streak');
-      acts.append(mini('Log today', 'g', () => { const log = rec.log.concat([todayKey()]); ctx.store.updateSync('habit', id, { log: Array.from(new Set(log)) }); ctx.afterMutate(); }));
-      acts.append(mini('Edit', '', () => ctx.edit('habit', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('habit', id); ctx.afterMutate(); }));
-      break;
-    }
-    case 'event': {
-      card.append(E.div({ class: 't' }, rec.title || ''));
-      meta.append((rec.kind ? rec.kind + ' · ' : '') + (rec.at ? humanDate(ctx, rec.at) : 'no date'));
-      if (rec.at) {
-        acts.append(dev(ctx, 'Calendar', 'calendar', { title: rec.title || 'Event', start: rec.at, end: new Date(new Date(rec.at).getTime() + 3600000).toISOString(), location: '', description: rec.kind || '' }));
-        acts.append(dev(ctx, 'Share', 'share', { title: rec.title || 'Event', text: `${rec.title || 'Event'} on ${humanDate(ctx, rec.at)}` }));
+    case 'stockItem':
+      card.append(E.div({ class: 't' }, `${record.qty} ${record.unit} ${record.name}`));
+      if (record.lowThreshold != null && record.qty <= record.lowThreshold) meta.append('⚠️ Low');
+      if (Array.isArray(record.history) && record.history.length) {
+        meta.append(E.div({ class: 'att' }, 'Recent adjustments'));
+        for (const entry of record.history.slice(-3).reverse()) meta.append(E.div({ class: 'att' }, stockHistoryText(entry, record.unit)));
       }
-      acts.append(mini('Edit', '', () => ctx.edit('event', id)));
-      acts.append(mini('Delete', 'r', () => { ctx.store.removeSync('event', id); ctx.afterMutate(); }));
       break;
-    }
-    default: return null;
+    case 'habit':
+      card.append(E.div({ class: 't' }, record.name || 'Habit'));
+      meta.append(`${streak(record.log || [])} day streak`);
+      break;
+    case 'event':
+      card.append(E.div({ class: 't' }, record.title || 'Untitled event'));
+      meta.append(`${record.kind ? `${record.kind} · ` : ''}${record.at ? humanDate(ctx, record.at) : 'no date'}`);
+      if (record.at && !record.allDay) meta.append(E.div({}, fmtHM(new Date(record.at).getHours(), new Date(record.at).getMinutes()) + (record.end ? ` – ${fmtHM(new Date(record.end).getHours(), new Date(record.end).getMinutes())}` : '')));
+      if (record.location) meta.append(E.div({ class: 'contact' }, `📍 ${record.location}`));
+      if (record.notes) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.notes));
+      break;
+    default:
+      return null;
   }
-  card.append(meta, acts);
+
+  for (const action of availableActions(kind, record, {
+    caps: typeof ctx.getCaps === 'function' ? ctx.getCaps() : ctx.caps,
+    settings: ctx.store.settings,
+    store: ctx.store
+  })) actions.append(actionButton(ctx, action));
+  card.append(meta, actions);
   return card;
 }
 
-/** Rebuild a File from a stored photo data-URL for Web Share of media. */
-function photoFile(rec) {
-  try {
-    const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(rec.dataUrl || '');
-    if (!m) return null;
-    const bin = atob(m[2]); const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    const ext = m[1].split('/')[1].replace('jpeg', 'jpg');
-    return new File([arr], (rec.name || 'photo') + '.' + ext, { type: m[1] });
-  } catch { return null; }
+function recurrenceText(recur) {
+  const words = { daily: 'every day', weekly: 'weekly', monthly: 'monthly', yearly: 'yearly' };
+  let text = words[recur.freq] || 'recurring';
+  if (recur.interval > 1) text = recur.freq === 'daily' ? `every ${recur.interval} days` : `every ${recur.interval} ${recur.freq.replace(/ly$/, '')}s`;
+  if (recur.freq === 'weekly' && recur.days && recur.days.length) text += ` on ${recur.days.map(day => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')}`;
+  if (recur.time) {
+    const [hour, minute] = recur.time.split(':').map(Number);
+    text += ` at ${fmtHM(hour, minute)}`;
+  }
+  return text;
 }
 
-function recurText(recur) {
-  const d = { daily: 'every day', weekly: 'weekly', monthly: 'monthly', yearly: 'yearly' };
-  let s = d[recur.freq] || recur.freq;
-  if (recur.freq === 'weekly' && recur.days) s += ' on ' + recur.days.map(x => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][x]).join(',');
-  if (recur.time) s += ' at ' + fmtHM(+recur.time.split(':')[0], +recur.time.split(':')[1]);
-  return s;
-}
 function streak(log) {
-  const set = new Set(log); let n = 0; const d = new Date();
-  while (true) { if (set.has(todayKey(d))) { n++; d.setDate(d.getDate() - 1); } else break; }
-  return n;
-}
-function moodEmoji(m) { const e = { happy: '😄', down: '😔', tired: '😴', stressed: '😰' }; return e[m] || '📔'; }
-function bump(ctx, kind, id, d, unit) {
-  const it = ctx.store.list(kind).find(x => x.id === id);
-  const hist = (it.history || []).concat([{ at: new Date().toISOString(), delta: d }]).slice(-300);
-  ctx.store.updateSync(kind, id, { qty: Math.max(0, it.qty + d), history: hist });
-  ctx.afterMutate();
-}
-function snooze(ctx, rec) {
-  const n = new Date(); n.setMinutes(n.getMinutes() + 10);
-  ctx.store.updateSync('reminder', rec.id, { at: n.toISOString(), status: 'active', snoozedUntil: n.toISOString() });
-  ctx.afterMutate();
+  const set = new Set(log || []);
+  const day = new Date();
+  let count = 0;
+  while (set.has(todayKey(day))) { count += 1; day.setDate(day.getDate() - 1); }
+  return count;
 }
 
-/** Inline history reference card (for pronoun actions on the last item). */
-export function miniRef(ctx, kind, id) {
-  const card = entityCard(ctx, kind, id);
-  if (!card) return null;
-  const w = E.div({ class: 'mini' }, 'Last: ' + (cardText(ctx, kind, id)));
-  w.addEventListener('click', () => ctx.scrollToCard(id));
-  return w;
+function moodEmoji(mood) {
+  const icons = { happy: '😄', down: '😔', tired: '😴', stressed: '😰' };
+  return icons[mood] || '📔';
 }
-export function cardText(ctx, kind, id) {
-  const r = ctx.store.list(kind).find(x => x.id === id);
-  if (!r) return '';
-  return r.title || r.name || r.person || r.category || r.text || '';
+
+function stockHistoryText(entry, unit) {
+  const delta = Number(entry && entry.delta);
+  const amount = Number.isFinite(delta) ? `${delta >= 0 ? '+' : '−'}${Math.abs(delta)}` : 'Changed';
+  const when = entry && entry.at ? humanDate({}, entry.at) : '';
+  return `${amount}${unit ? ` ${unit}` : ''}${when ? ` · ${when}` : ''}`;
 }

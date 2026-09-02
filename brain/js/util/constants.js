@@ -1,9 +1,9 @@
 // Central constants. Kept intentionally small.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const DB_NAME = 'brain';
 export const DB_VERSION = 1;
 export const APP_NAME = 'Brain';
-export const VERSION = '2.0.0';
+export const VERSION = '2.1.1';
 
 export const CURRENCIES = ['₹', '$', '€', '£', 'AED', '₽', '¥', 'Rs '];
 export const LOCALES = ['en-IN', 'en-US', 'en-GB', 'hi-IN', 'en-AU', 'es-ES', 'fr-FR', 'ar-SA'];

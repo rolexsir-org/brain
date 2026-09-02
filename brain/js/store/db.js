@@ -1,20 +1,14 @@
-// DB abstraction. Uses IndexedDB when available (fast, durable, async), and
-// transparently falls back to localStorage when IndexedDB is blocked/unavailable
-// (e.g. some sandboxed contexts / older setups). Both expose the same promise API.
-//
-// Backend B is a single key/value object store; keys include 'task','reminder',...
-// 'settings','schema','meta' etc. Each value is a JSON blob. Writes are whole-key
-// so a crash cannot leave a half-written record.
+// Small persistence abstraction. IndexedDB is preferred; localStorage is a
+// fallback; memory is a last resort for restricted browser contexts. Values are
+// plain snapshots, never executable code.
 
 import { DB_NAME, DB_VERSION } from '../util/constants.js';
 
 const PREFIX = 'brain:v2:';
 
-function idbAvailable() {
-  try { return typeof indexedDB !== 'undefined' && !!indexedDB.open; } catch { return false; }
-}
+function idbAvailable() { try { return typeof indexedDB !== 'undefined' && typeof indexedDB.open === 'function'; } catch { return false; } }
 function lsAvailable() {
-  try { localStorage.setItem('__brain_t','1'); localStorage.removeItem('__brain_t'); return true; } catch { return false; }
+  try { localStorage.setItem('__brain_probe__', '1'); localStorage.removeItem('__brain_probe__'); return true; } catch { return false; }
 }
 
 const IdbBackend = {
@@ -23,46 +17,118 @@ const IdbBackend = {
   async init() {
     if (this._db) return this;
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains('kv')) request.result.createObjectStore('kv');
       };
-      req.onsuccess = () => { this._db = req.result; resolve(this); };
-      req.onerror = () => reject(new Error('IndexedDB open failed'));
-      req.onblocked = () => reject(new Error('IndexedDB blocked'));
+      request.onsuccess = () => { this._db = request.result; resolve(this); };
+      request.onerror = () => reject(new Error('IndexedDB open failed'));
+      request.onblocked = () => reject(new Error('IndexedDB is blocked by another open tab'));
     });
   },
-  _tx(mode) {
-    const tx = this._db.transaction('kv', mode);
-    return tx.objectStore('kv');
+  transaction(mode) { return this._db.transaction('kv', mode); },
+  kvGet(key) {
+    return new Promise((resolve, reject) => {
+      try {
+        const request = this.transaction('readonly').objectStore('kv').get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('IndexedDB read failed'));
+      } catch (error) { reject(error); }
+    });
   },
-  kvGet(key) { return new Promise((res, rej) => { try { const r = this._tx('readonly').get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); },
-  kvSet(key, val) { return new Promise((res, rej) => { try { const r = this._tx('readwrite').put(val, key); r.onsuccess = () => res(); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); },
-  kvDel(key) { return new Promise((res, rej) => { try { const r = this._tx('readwrite').delete(key); r.onsuccess = () => res(); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); },
-  async listKeys() {
-    return new Promise((res, rej) => { try { const r = this._tx('readonly').openCursor(); const keys = []; r.onsuccess = () => { const c = r.result; if (c) { keys.push(c.key); c.continue(); } else res(keys); }; r.onerror = () => rej(r.error); } catch (e) { rej(e); } });
+  kvSet(key, value) { return this.kvSetMany([[key, value]]); },
+  kvSetMany(entries) {
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.transaction('readwrite');
+        const store = transaction.objectStore('kv');
+        for (const [key, value] of entries) store.put(value, key);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('IndexedDB write failed'));
+        transaction.onabort = () => reject(transaction.error || new Error('IndexedDB write aborted'));
+      } catch (error) { reject(error); }
+    });
   },
-  async clearAll() { const keys = await this.listKeys(); for (const k of keys) await this.kvDel(k); },
-  async destroy() { if (this._db) { this._db.close(); this._db = null; } try { indexedDB.deleteDatabase(DB_NAME); } catch {} }
+  kvDel(key) {
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.transaction('readwrite');
+        transaction.objectStore('kv').delete(key);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('IndexedDB delete failed'));
+      } catch (error) { reject(error); }
+    });
+  },
+  listKeys() {
+    return new Promise((resolve, reject) => {
+      try {
+        const request = this.transaction('readonly').objectStore('kv').openCursor();
+        const keys = [];
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (cursor) { keys.push(cursor.key); cursor.continue(); }
+          else resolve(keys);
+        };
+        request.onerror = () => reject(request.error || new Error('IndexedDB cursor failed'));
+      } catch (error) { reject(error); }
+    });
+  },
+  async clearAll() {
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.transaction('readwrite');
+        transaction.objectStore('kv').clear();
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('IndexedDB clear failed'));
+      } catch (error) { reject(error); }
+    });
+  },
+  async destroy() {
+    if (this._db) { this._db.close(); this._db = null; }
+    try { indexedDB.deleteDatabase(DB_NAME); } catch {}
+  }
 };
 
 const LsBackend = {
   name: 'localstorage',
   async init() { return this; },
-  kvGet(key) { try { const v = localStorage.getItem(PREFIX + key); return Promise.resolve(v == null ? undefined : JSON.parse(v)); } catch { return Promise.resolve(undefined); } },
-  kvSet(key, val) { try { localStorage.setItem(PREFIX + key, JSON.stringify(val)); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
+  kvGet(key) {
+    try {
+      const value = localStorage.getItem(PREFIX + key);
+      return Promise.resolve(value == null ? undefined : JSON.parse(value));
+    } catch { return Promise.resolve(undefined); }
+  },
+  kvSet(key, value) { return this.kvSetMany([[key, value]]); },
+  async kvSetMany(entries) {
+    // localStorage has no transaction. Serialize all values before writing so a
+    // malformed value never leaves a partial JSON record behind.
+    const serialized = entries.map(([key, value]) => [PREFIX + key, JSON.stringify(value)]);
+    try {
+      for (const [key, value] of serialized) localStorage.setItem(key, value);
+    } catch (error) { return Promise.reject(error); }
+  },
   kvDel(key) { try { localStorage.removeItem(PREFIX + key); return Promise.resolve(); } catch { return Promise.resolve(); } },
-  async listKeys() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(PREFIX)) out.push(k.slice(PREFIX.length)); } } catch {} return out; },
-  async clearAll() { const keys = await this.listKeys(); for (const k of keys) try { localStorage.removeItem(PREFIX + k); } catch {} },
+  async listKeys() {
+    const keys = [];
+    try {
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key && key.startsWith(PREFIX)) keys.push(key.slice(PREFIX.length));
+      }
+    } catch {}
+    return keys;
+  },
+  async clearAll() { for (const key of await this.listKeys()) await this.kvDel(key); },
   async destroy() { await this.clearAll(); }
 };
 
 export const MemoryBackend = {
-  name: 'memory', _m: {},
+  name: 'memory',
+  _m: {},
   async init() { return this; },
   kvGet(key) { return Promise.resolve(this._m[key]); },
-  kvSet(key, val) { this._m[key] = val; return Promise.resolve(); },
+  kvSet(key, value) { this._m[key] = value; return Promise.resolve(); },
+  async kvSetMany(entries) { for (const [key, value] of entries) this._m[key] = value; },
   kvDel(key) { delete this._m[key]; return Promise.resolve(); },
   async listKeys() { return Object.keys(this._m); },
   async clearAll() { this._m = {}; },
@@ -70,12 +136,9 @@ export const MemoryBackend = {
 };
 
 export async function openDb(preferIdb = true) {
-  let backend = null;
   if (preferIdb && idbAvailable()) {
-    try { backend = await IdbBackend.init(); }
-    catch { backend = null; }
+    try { return await IdbBackend.init(); } catch { /* fall through */ }
   }
-  if (!backend && lsAvailable()) backend = await LsBackend.init();
-  if (!backend) backend = MemoryBackend;
-  return backend;
+  if (lsAvailable()) return LsBackend.init();
+  return MemoryBackend.init();
 }

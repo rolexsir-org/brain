@@ -41,6 +41,10 @@ test('literal calendar dates', () => {
   assert.equal(+D.dateLiteralFromText('12 march', NOW), +day(2026, 3, 12));
   assert.equal(+D.dateLiteralFromText('12th march', NOW), +day(2026, 3, 12));
   assert.equal(+D.dateWordFromText('march 12', NOW).date.getTime(), day(2026, 3, 12).getTime());
+  assert.equal(+D.dateLiteralFromText('March 12, 2025', NOW), +day(2025, 3, 12), 'named dates retain an explicit year');
+  assert.equal(+D.dateLiteralFromText('12/03/26', NOW), +day(2026, 3, 12), 'two-digit numeric years use the current century');
+  assert.equal(+D.dateLiteralFromText('2025-03-12', NOW), +day(2025, 3, 12), 'ISO dates retain their explicit year');
+  assert.equal(D.dateLiteralFromText('2026-02-30', NOW), null, 'invalid ISO dates are rejected');
   // a date already passed this year rolls to next year
   assert.equal(+D.dateWordFromText('jan 5', NOW).date, +day(2027, 1, 5));
   // invalid
@@ -53,6 +57,15 @@ test('relative times', () => {
   assert.equal(+D.relativeFromText('in 3 days', NOW).date, +(NOW.getTime() + 3 * 86400000));
 });
 
+test('month and year arithmetic clamp to the last valid calendar day', () => {
+  const january31 = at(2026, 1, 31, 10);
+  const february = D.addMonths(january31, 1);
+  assert.equal(+february, +at(2026, 2, 28, 10));
+  const leapDay = at(2024, 2, 29, 10);
+  const nextYear = D.addYears(leapDay, 1);
+  assert.equal(+nextYear, +at(2025, 2, 28, 10));
+});
+
 test('resolveMoment combines day + time', () => {
   const a = D.resolveMoment('tomorrow at 7pm', NOW);
   assert.equal(+a.date, +at(2026, 3, 7, 19));
@@ -62,11 +75,17 @@ test('resolveMoment combines day + time', () => {
   assert.equal(+c.date, +at(2026, 3, 13, 9)); // default 9am
   const d = D.resolveMoment('in 2 hours', NOW);
   assert.equal(d.hasTime, false);
+  const e = D.resolveMoment('in 2 days at 3pm', NOW);
+  assert.equal(+e.date, +at(2026, 3, 8, 15));
 });
 
 test('recurrence parsing', () => {
   assert.deepEqual(D.parseRecur('every day', NOW), { freq: 'daily', interval: 1, time: null });
   assert.deepEqual(D.parseRecur('daily at 8pm', NOW), { freq: 'daily', interval: 1, time: '20:00' });
+  assert.deepEqual(D.parseRecur('every 2 days at 8pm', NOW), { freq: 'daily', interval: 2, time: '20:00' });
+  assert.deepEqual(D.parseRecur('every other day', NOW), { freq: 'daily', interval: 2, time: null });
+  assert.deepEqual(D.parseRecur('every 2 weeks on monday', NOW), { freq: 'weekly', interval: 2, days: [1], time: null });
+  assert.equal(D.parseRecur('every 2 months on monday', NOW).freq, 'monthly');
   assert.deepEqual(D.parseRecur('every monday', NOW), { freq: 'weekly', interval: 1, days: [1], time: null });
   assert.deepEqual(D.parseRecur('every monday and thursday', NOW), { freq: 'weekly', interval: 1, days: [1, 4], time: null });
   assert.deepEqual(D.parseRecur('every weekday', NOW), { freq: 'weekly', interval: 1, days: [1, 2, 3, 4, 5], time: null });
