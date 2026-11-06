@@ -25,7 +25,7 @@ export function humanDate(ctx, iso) {
 }
 
 export function kindIcon(kind) {
-  const icons = { task: '✅', reminder: '🔔', note: '📝', person: '👤', money: '💰', debt: '💸', stockItem: '📦', habit: '🔥', journal: '📔', event: '📅', photo: '📷' };
+  const icons = { task: '✅', reminder: '🔔', note: '📝', person: '👤', money: '💰', debt: '💸', stockItem: '📦', habit: '🔥', journal: '📔', event: '📅', photo: '📷', instagramDraft: '🎬', instagramPublication: '📸' };
   return icons[kind] || '•';
 }
 
@@ -137,6 +137,25 @@ export function entityCard(ctx, kind, id) {
       if (record.location) meta.append(E.div({ class: 'contact' }, `📍 ${record.location}`));
       if (record.notes) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.notes));
       break;
+    case 'instagramDraft': {
+      const statusEmoji = { draft: '⚪', ready: '🟢', pending: '🟡', publishing: '⏳', published: '✅', failed: '❌', scheduled: '📅' }[record.status] || '⚪';
+      card.append(E.div({ class: 't' }, `${statusEmoji} ${record.videoName || 'Reel draft'}`));
+      meta.append(E.div({}, `${record.videoWidth || '?'}×${record.videoHeight || '?'} · ${record.videoDuration ? Math.round(record.videoDuration) + 's' : '—'} · ${(record.videoSize / 1048576).toFixed(1)} MB`));
+      if (record.caption) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.caption));
+      if (record.hashtags && record.hashtags.length) meta.append(E.div({ class: 'att' }, record.hashtags.map(t => `#${t}`).join(' ')));
+      meta.append(E.div({ class: 'att' }, `Status: ${record.status}${record.publishedAt ? ` · published ${humanDate(ctx, record.publishedAt)}` : ''}`));
+      if (record.lastError) meta.append(E.div({ class: 'att', style: 'color:var(--bad)' }, `Error: ${record.lastError.slice(0, 200)}`));
+      if (record.permalink) meta.append(E.div({ class: 'att' }, `🔗 ${record.permalink}`));
+      if (record.scheduledAt) meta.append(E.div({}, `Scheduled for ${humanDate(ctx, record.scheduledAt)} · ${fmtHM(new Date(record.scheduledAt).getHours(), new Date(record.scheduledAt).getMinutes())}`));
+      break;
+    }
+    case 'instagramPublication': {
+      card.append(E.div({ class: 't' }, record.videoName || 'Published Reel'));
+      if (record.caption) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.caption));
+      if (record.hashtags && record.hashtags.length) meta.append(E.div({ class: 'att' }, record.hashtags.map(t => `#${t}`).join(' ')));
+      meta.append(E.div({ class: 'att' }, `Published ${humanDate(ctx, record.publishedAt)}${record.permalink ? ` · ${record.permalink}` : ''}`));
+      break;
+    }
     default:
       return null;
   }

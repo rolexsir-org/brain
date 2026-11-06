@@ -13,6 +13,7 @@ const required = [
   'js/store/db.js', 'js/store/store.js', 'js/store/validate.js', 'js/store/migrate.js',
   'js/engine/actions.js', 'js/engine/context.js', 'js/engine/intent.js', 'js/engine/search.js',
   'js/ui/cards.js', 'js/util/constants.js', 'js/util/date.js', 'js/util/util.js',
+  'js/instagram/config.js', 'js/instagram/auth.js', 'js/instagram/api.js', 'js/instagram/media.js', 'js/instagram/publish.js', 'js/instagram/ui.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'
 ];
 

@@ -72,6 +72,10 @@ export class Brain {
     const pendingExternal = this._finishExternalChoice(low, t);
     if (pendingExternal) return pendingExternal;
 
+    // ---- Instagram Business intents (explicit, never auto-publish) ----
+    const ig = this._instagramIntent(low, t);
+    if (ig) return ig;
+
     // ---- Simple meta / smalltalk ----
     const meta = this._meta(low, t);
     if (meta) return meta;
@@ -122,6 +126,7 @@ Stock — “I have 5kg rice”, “used 2kg rice”
 Health — “took paracetamol at 8am”, “walked 8000 steps”, “weight 68kg”
 Habits — “did yoga today”
 Journal — “I felt great today”
+Instagram — “connect Instagram”, “prepare this video as a Reel”, “create a caption for this Reel”, “show my Instagram drafts”, “show the Reel I published yesterday”, “disconnect Instagram”
 Search & questions — “what's coming up?”, “how much did I spend this month?”, “show everything about John”, “who owes me?”`);
   }
 
@@ -1211,6 +1216,88 @@ Search & questions — “what's coming up?”, “how much did I spend this mon
     }
     return null;
   }
+  // ── Instagram Business intents ─────────────────────────────────────────
+  _instagramIntent(low, t) {
+    const s = this.store;
+    // Honest limitation: never claim automation — let _externalAction handle automate requests
+    if (/(?:\b(?:automate|automation|bot|scrape)\b.*\b(?:instagram|insta)\b|\b(?:instagram|insta)\b.*\b(?:automate|automation|bot|scrape)\b)/i.test(t)) return null;
+    const ig = s.settings && s.settings.instagram ? s.settings.instagram : { connected:false };
+    const isIgReel = /\b(?:instagram|insta|reel)\b/i.test(t);
+    if (/\b(?:connect|link|authorize)\b.*\b(?:instagram|insta)\b/i.test(t) || /\b(?:instagram|insta)\b.*\b(?:connect|link)\b/i.test(t)) {
+      if (ig.connected) return reply(`Instagram is already connected as @${ig.username || ig.igUserId}.`, [], { id: 'instagram.open', label: '📸 Open Instagram', args: { id: 'hub' } });
+      return reply('To connect your Instagram Business account, open the Instagram section and authorize via Meta. Only publishing permissions are requested.', [], { id: 'instagram.connect', label: '🔗 Connect Instagram', args: {} });
+    }
+    if (/\b(?:disconnect|unlink|logout|remove)\b.*\b(?:instagram|insta)\b/i.test(t) || /\b(?:instagram|insta)\b.*\b(?:disconnect|unlink)\b/i.test(t)) {
+      if (!ig.connected) return reply('Instagram is not connected.');
+      return reply(`Instagram is connected as @${ig.username || ig.igUserId}. Disconnect? This keeps your drafts but requires reconnect to publish.`, [], { id: 'instagram.disconnect', label: 'Disconnect Instagram', args: {} });
+    }
+    if (isIgReel && /\b(?:status|connected|connection|account)\b/i.test(low)) {
+      if (ig.connected) {
+        const exp = ig.expiresAt ? new Date(ig.expiresAt).toLocaleDateString() : 'unknown';
+        return reply(`✅ Instagram connected as @${ig.username} (ID ${String(ig.igUserId).slice(0,6)}…). Token expiry: ${exp}.`, [], { id: 'instagram.open', label: '📸 Open Instagram', args: { id: 'hub' } });
+      }
+      return reply('Instagram is not connected. Open Instagram to connect your Business account.', [], { id: 'instagram.connect', label: '🔗 Connect Instagram', args: {} });
+    }
+    if (/\bprepare\b.*\b(?:video|reel)\b.*\b(?:instagram|insta|reel)\b/i.test(t) || /\b(?:create|make)\b.*\breel\b/i.test(t) || (/\bprepare\b.*\bthis\b.*\b(?:video|reel)\b/i.test(t) && isIgReel)) {
+      return reply('Select a video from your device to prepare as a Reel. You will review caption, hashtags, and preview before any publishing.', [], { id: 'instagram.draft.create', label: '📼 Select Reel video', args: {} });
+    }
+    if (/\b(?:create|generate|write|make|add)\b.*\bcaption\b.*\b(?:reel|instagram|insta)\b/i.test(t) || (/\bcaption\b.*\b(?:reel)\b/i.test(low) && isIgReel)) {
+      const drafts = s.list('instagramDraft').filter(d => d.status !== 'published');
+      if (!drafts.length) return reply('No Reel drafts yet. Prepare a video first, then I can help with the caption.');
+      const draft = drafts.sort((a,b)=> String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+      this.ctx.push('instagramDraft', draft.id, draft.videoName || 'Reel');
+      return reply(`Draft "${draft.videoName}" is ready. Open it to edit the caption and hashtags.`, [{ kind: 'instagramDraft', id: draft.id }], { id: 'instagram.draft.preview', label: '✏️ Edit caption', args: { kind: 'instagramDraft', id: draft.id } });
+    }
+    if (/\b(?:add|generate|suggest)\b.*\bhashtag/i.test(low) && isIgReel) {
+      const drafts = s.list('instagramDraft').filter(d => d.status !== 'published');
+      if (!drafts.length) return reply('No Reel drafts to add hashtags to. Prepare a video first.');
+      const draft = drafts.sort((a,b)=> String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+      return reply(`Open "${draft.videoName}" to edit hashtags. I can suggest relevant ones based on your caption.`, [{ kind: 'instagramDraft', id: draft.id }], { id: 'instagram.draft.preview', label: '✏️ Edit hashtags', args: { kind: 'instagramDraft', id: draft.id } });
+    }
+    if (/\bshow\b.*\b(?:my\s+)?(?:instagram\s+)?drafts\b/i.test(low) || (/\bdraft\b/i.test(low) && isIgReel && /\bshow|list|view\b/i.test(low))) {
+      const drafts = s.list('instagramDraft');
+      if (!drafts.length) return reply('No Instagram drafts yet. Say "prepare this video as an Instagram Reel" to start.');
+      return reply(`You have ${drafts.length} Instagram draft${drafts.length===1?'':'s'}:`, drafts.slice(0,8).map(d=>({ kind:'instagramDraft', id:d.id })), { id: 'instagram.open', label: '📼 Open Instagram', args: { id: 'hub' } });
+    }
+    if (/\bshow\b.*\b(?:published|posted)\b.*\b(?:reel|instagram|insta)\b/i.test(low) || (/\breel\b.*\b(?:yesterday|today|published|posted)\b/i.test(low) && isIgReel)) {
+      let filterDays = null;
+      if (/yesterday/i.test(low)) filterDays = 1;
+      else if (/today/i.test(low)) filterDays = 0;
+      const pubs = s.list('instagramPublication');
+      const draftsPub = s.list('instagramDraft').filter(d=> d.status==='published');
+      const all = [...pubs, ...draftsPub].sort((a,b)=> String(b.publishedAt||b.updatedAt).localeCompare(String(a.publishedAt||a.updatedAt)));
+      if (!all.length) return reply('No published Reels yet.');
+      if (filterDays !== null) {
+        const target = new Date(); target.setDate(target.getDate() - (filterDays||0));
+        const key = target.getFullYear() + '-' + String(target.getMonth()+1).padStart(2,'0') + '-' + String(target.getDate()).padStart(2,'0');
+        const filtered = all.filter(r=> String(r.publishedAt||'').slice(0,10)===key);
+        if (!filtered.length) return reply(`No Reels published ${filterDays===1?'yesterday':'today'}.`, all.slice(0,4).map(r=>({ kind: r.type==='instagramPublication' ? 'instagramPublication' : 'instagramDraft', id: r.id })));
+        return reply(`Reels published ${filterDays===1?'yesterday':'today'}:`, filtered.map(r=>({ kind: r.type==='instagramPublication' ? 'instagramPublication' : 'instagramDraft', id: r.id })));
+      }
+      return reply('Your published Reels:', all.slice(0,8).map(r=>({ kind: r.type==='instagramPublication' ? 'instagramPublication' : 'instagramDraft', id: r.id })));
+    }
+    if (/\bpublish\b.*\b(?:reel|instagram|insta)\b/i.test(t) || (/\bpost\b.*\b(?:reel|instagram)\b/i.test(t) && isIgReel)) {
+      const drafts = s.list('instagramDraft').filter(d=> d.status !== 'published' && d.status !== 'publishing');
+      if (!drafts.length) return reply('No publishable Reel drafts. Prepare a video and add a caption first.');
+      const last = this.ctx.last.find(x=> x.type==='instagramDraft');
+      let draft = last ? s.get('instagramDraft', last.id) : drafts.sort((a,b)=> String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+      if (!draft || draft.status==='published') draft = drafts[0];
+      this.ctx.push('instagramDraft', draft.id, draft.videoName);
+      return reply(`Ready to publish "${draft.videoName}"? I will show a final preview and ask for your explicit confirmation. No Reel is published until you confirm.`, [{ kind: 'instagramDraft', id: draft.id }], { id: 'instagram.publish.preview', label: 'Eye Preview & publish', args: { kind:'instagramDraft', id: draft.id } });
+    }
+    if (/\bprepare\b.*\b(?:tomorrow|schedule|later|next week)\b/i.test(t) && isIgReel) {
+      const drafts = s.list('instagramDraft').filter(d=> d.status !== 'published');
+      if (!drafts.length) return reply('No drafts to schedule. Prepare a video first.');
+      const draft = drafts[0];
+      const when = t.match(/tomorrow/i) ? 'tomorrow' : t.match(/next week/i) ? 'next week' : 'later';
+      return reply(`I can remind you to publish "${draft.videoName}" ${when}. Brain cannot auto-publish when closed — you will get a reminder and confirm publishing then.`, [{ kind:'instagramDraft', id:draft.id }], { id: 'instagram.schedule', label: '⏰ Set reminder', args: { kind:'instagramDraft', id: draft.id, when } });
+    }
+    if (/^(?:open\s+)?instagram\s*$/i.test(low) || /^show\s+instagram\s*$/i.test(low) || /^open\s+instagram\s+workspace\s*$/i.test(low)) {
+      return reply('Opening your Instagram workspace — connection, drafts, and publishing controls.', [], { id: 'instagram.open', label: '📸 Open Instagram', args: { id: 'hub' } });
+    }
+    return null;
+  }
+
 }
 
 // Parse "John “I’ll be there”", "John: hello", or a known contact prefix.

@@ -219,6 +219,107 @@ export function makeEvent(raw = {}) {
   };
 }
 
+// ── Instagram Business Integration ──────────────────────────────────────────
+// These collections remain local-only. Video blobs are stored separately and
+// never included in JSON backup export — re-selection after restore is expected.
+
+export function cleanCaption(value) {
+  let text = cleanText(value, 3000).trim();
+  if (text.length > 2200) text = text.slice(0, 2200);
+  return text;
+}
+
+export function cleanHashtags(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (let raw of value) {
+    let tag = String(raw || '').trim().replace(/^#/, '').replace(/\s+/g, '');
+    tag = tag.replace(/[^a-zA-Z0-9_]/g, '');
+    if (!tag || tag.length > 80) continue;
+    const lower = tag.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(tag);
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+
+export function makeInstagramDraft(raw = {}) {
+  const allowedStatus = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
+  const status = allowedStatus.includes(raw.status) ? raw.status : 'draft';
+  const caption = cleanCaption(raw.caption || '');
+  const hashtags = cleanHashtags(raw.hashtags || []);
+  // Video metadata - validated, but original video stays as separate blob
+  const videoName = cleanText(raw.videoName || '', 260).trim() || 'reel.mp4';
+  const videoMime = cleanText(raw.videoMime || 'video/mp4', 80).trim().toLowerCase();
+  const safeMime = ['video/mp4', 'video/quicktime', 'video/mov', 'video/x-m4v'].includes(videoMime) ? videoMime : 'video/mp4';
+  return {
+    ...base(raw),
+    type: 'instagramDraft',
+    videoName,
+    videoMime: safeMime,
+    videoSize: finiteNumber(raw.videoSize, 0, { min: 0, max: 2_000_000_000 }),
+    videoWidth: finiteNumber(raw.videoWidth, 0, { min: 0, max: 10000 }),
+    videoHeight: finiteNumber(raw.videoHeight, 0, { min: 0, max: 10000 }),
+    videoDuration: finiteNumber(raw.videoDuration, 0, { min: 0, max: 10000 }),
+    caption,
+    hashtags,
+    coverUrl: cleanText(raw.coverUrl || '', 2000).trim().slice(0, 2000),
+    status,
+    scheduledAt: cleanDateIso(raw.scheduledAt),
+    publishedAt: cleanDateIso(raw.publishedAt),
+    igContainerId: typeof raw.igContainerId === 'string' ? raw.igContainerId.slice(0, 128) : null,
+    igMediaId: typeof raw.igMediaId === 'string' ? raw.igMediaId.slice(0, 128) : null,
+    permalink: typeof raw.permalink === 'string' ? raw.permalink.slice(0, 500) : null,
+    lastError: cleanText(raw.lastError || '', 1000),
+    retryCount: finiteNumber(raw.retryCount, 0, { min: 0, max: 20 }),
+    tempVideoUrl: typeof raw.tempVideoUrl === 'string' ? raw.tempVideoUrl.slice(0, 2000) : null,
+    deletedAt: null
+  };
+}
+
+export function makeInstagramPublication(raw = {}) {
+  return {
+    ...base(raw),
+    type: 'instagramPublication',
+    draftId: typeof raw.draftId === 'string' ? raw.draftId.slice(0, 64) : null,
+    igMediaId: typeof raw.igMediaId === 'string' ? raw.igMediaId.slice(0, 128) : null,
+    igContainerId: typeof raw.igContainerId === 'string' ? raw.igContainerId.slice(0, 128) : null,
+    permalink: typeof raw.permalink === 'string' ? raw.permalink.slice(0, 500) : null,
+    caption: cleanCaption(raw.caption || ''),
+    hashtags: cleanHashtags(raw.hashtags || []),
+    videoName: cleanText(raw.videoName || '', 260),
+    publishedAt: cleanDateIso(raw.publishedAt) || nowISO(),
+    status: ['published', 'failed'].includes(raw.status) ? raw.status : 'published',
+    lastError: cleanText(raw.lastError || '', 1000),
+    deletedAt: null
+  };
+}
+
+export function makeInstagramConnection(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const connected = !!raw.connected;
+  return {
+    connected,
+    igUserId: typeof raw.igUserId === 'string' ? raw.igUserId.slice(0, 64) : '',
+    username: cleanInstagram(raw.username || ''),
+    name: cleanName(raw.name || ''),
+    profilePictureUrl: cleanText(raw.profilePictureUrl || '', 2000),
+    pageId: typeof raw.pageId === 'string' ? raw.pageId.slice(0, 64) : '',
+    // Access token is stored locally. Browser storage is NOT a secure vault.
+    // Production should use the token-exchange service to keep long-lived tokens
+    // server-side and only cache a short-lived token client-side.
+    accessToken: typeof raw.accessToken === 'string' ? raw.accessToken.slice(0, 2000) : '',
+    tokenType: typeof raw.tokenType === 'string' ? raw.tokenType.slice(0, 20) : 'bearer',
+    expiresAt: cleanDateIso(raw.expiresAt),
+    connectedAt: cleanDateIso(raw.connectedAt),
+    lastValidatedAt: cleanDateIso(raw.lastValidatedAt),
+    scopes: Array.isArray(raw.scopes) ? raw.scopes.map(s => cleanText(s, 80)).filter(Boolean).slice(0, 20) : []
+  };
+}
+
 /** Re-shape an incoming record by collection while dropping unknown properties. */
 export function sanitizeRecord(type, raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -234,11 +335,13 @@ export function sanitizeRecord(type, raw) {
     case 'journal': return makeJournal(raw);
     case 'event': return makeEvent(raw);
     case 'photo': return makePhoto(raw);
+    case 'instagramDraft': return makeInstagramDraft(raw);
+    case 'instagramPublication': return makeInstagramPublication(raw);
     default: return null;
   }
 }
 
-export const COLLECTIONS = ['task', 'reminder', 'note', 'person', 'money', 'debt', 'stockItem', 'habit', 'journal', 'event', 'photo'];
+export const COLLECTIONS = ['task', 'reminder', 'note', 'person', 'money', 'debt', 'stockItem', 'habit', 'journal', 'event', 'photo', 'instagramDraft', 'instagramPublication'];
 
 export function emptyCollections() {
   return Object.fromEntries(COLLECTIONS.map(collection => [collection, []]));

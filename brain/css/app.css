@@ -43,4 +43,11 @@ header{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 14px;
 
 .toast{position:fixed;left:50%;max-width:calc(100vw - 28px);transform:translateX(-50%) translateY(8px);bottom:calc(92px + env(safe-area-inset-bottom));background:#0b101c;border:1px solid var(--line);color:var(--ink);padding:9px 14px;border-radius:12px;font-size:14px;z-index:80;box-shadow:0 8px 30px rgba(0,0,0,.4);opacity:0;transition:.2s;pointer-events:none;}.toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
+/* Instagram integration */
+.ig-conn-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;}
+.ig-draft-list{display:flex;flex-direction:column;gap:2px;}
+.ig-conn-card .meta{color:var(--ink2);font-size:12px;margin-top:4px;}
+.ig-conn-card .banner{margin:6px 0 8px;}
+.ed{width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--ink);border-radius:11px;padding:11px 12px;font-size:15px;outline:none;font-family:inherit;}
+.ed:focus{border-color:var(--accent);}
 .reduce *{animation:none!important;transition:none!important;scroll-behavior:auto!important;}@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important;}}@media (max-width:360px){header{padding-left:10px;padding-right:10px;}.brand .sub{display:none;}.card{padding:10px;}.mini{padding:5px 7px;}.diag{grid-template-columns:1fr;gap:3px;}}@media (min-width:621px){#app{border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft);}}
