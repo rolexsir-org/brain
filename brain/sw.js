@@ -3,7 +3,7 @@
 // it while running; it cannot wake itself at an arbitrary future time. There is
 // intentionally no fake background scheduler or push subscription here.
 
-const VERSION = 'brain-v2.2.0';
+const VERSION = 'brain-v2.3.0'; // bump on each release; old brain-* caches auto-cleaned
 const CACHE = VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
@@ -12,8 +12,8 @@ const ASSETS = [
   './js/util/util.js', './js/util/date.js', './js/util/constants.js',
   './js/store/db.js', './js/store/store.js', './js/store/validate.js', './js/store/migrate.js',
   './js/engine/intent.js', './js/engine/actions.js', './js/engine/context.js', './js/engine/search.js',
-  './js/ui/cards.js',
-  './js/instagram/config.js', './js/instagram/auth.js', './js/instagram/api.js', './js/instagram/media.js', './js/instagram/publish.js', './js/instagram/ui.js',
+  './js/ui/cards.js', './js/ui/commandCentre.js', './js/ui/automationCentre.js', './js/ui/diagnostics.js',
+  './js/util/crypto.js', './js/instagram/config.js', './js/instagram/auth.js', './js/instagram/api.js', './js/instagram/media.js', './js/instagram/publish.js', './js/instagram/ui.js', './js/instagram/stateMachine.js', './js/instagram/automation.js', './js/instagram/queue.js', './js/instagram/coverPicker.js', './js/instagram/insights.js', './js/instagram/mediaTransfer.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'
 ];
 

@@ -15,12 +15,38 @@ export function isIOS() {
   } catch { return false; }
 }
 
-export async function registerSw() {
+export async function registerSw(onUpdate) {
   try {
     if (!navigator.serviceWorker) return null;
-    return await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    if (reg) {
+      reg.addEventListener('updatefound', ()=>{
+        const inst = reg.installing;
+        if (inst) inst.addEventListener('statechange', ()=>{
+          if (inst.state==='installed' && navigator.serviceWorker.controller) {
+            if (typeof onUpdate==='function') onUpdate(reg);
+            else {
+              const banner=document.createElement('div');
+              banner.setAttribute('role','alert');
+              banner.style.cssText='position:fixed;bottom:16px;left:12px;right:12px;background:#0e131f;color:#fff;padding:10px 12px;border-radius:8px;z-index:9999;display:flex;gap:8px;align-items:center;justify-content:space-between;';
+              const msg=document.createElement('span'); msg.textContent='Update available — new Brain version ready.';
+              const btn=document.createElement('button'); btn.textContent='Reload'; btn.style.cssText='background:#3ecf8e;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;color:#000;font-weight:600';
+              btn.addEventListener('click', ()=> window.location.reload());
+              const dismiss=document.createElement('button'); dismiss.textContent='Later'; dismiss.style.cssText='background:transparent;border:1px solid #fff;color:#fff;padding:6px 10px;border-radius:6px;cursor:pointer';
+              dismiss.addEventListener('click', ()=> banner.remove());
+              banner.append(msg, btn, dismiss);
+              document.body.append(banner);
+            }
+          }
+        });
+      });
+      // If controller changes (new SW activated)
+      navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+        // do not auto-reload; user confirms via banner
+      });
+    }
+    return reg;
   } catch {
-    // Offline core functionality still works without a service worker.
     return null;
   }
 }

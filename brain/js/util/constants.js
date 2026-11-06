@@ -1,9 +1,9 @@
 // Central constants. Kept intentionally small.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const DB_NAME = 'brain';
 export const DB_VERSION = 1;
 export const APP_NAME = 'Brain';
-export const VERSION = '2.2.0';
+export const VERSION = '2.3.0';
 
 export const CURRENCIES = ['₹', '$', '€', '£', 'AED', '₽', '¥', 'Rs '];
 export const LOCALES = ['en-IN', 'en-US', 'en-GB', 'hi-IN', 'en-AU', 'es-ES', 'fr-FR', 'ar-SA'];
@@ -13,12 +13,14 @@ export const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// Instagram Business Integration — constants aligned with Meta Graph API v21.0
-export const SCHEMA_VERSION_INSTAGRAM = 4;
-export const INSTAGRAM_API_VERSION = 'v21.0';
-export const INSTAGRAM_OAUTH_DIALOG = 'https://www.facebook.com/v21.0/dialog/oauth';
-export const INSTAGRAM_TOKEN_ENDPOINT = 'https://graph.facebook.com/v21.0/oauth/access_token';
-export const INSTAGRAM_GRAPH_ENDPOINT = 'https://graph.facebook.com/v21.0';
+// Instagram Business Integration — see docs/api-compatibility.md for version upgrades.
+// Limits are configurable and subject to Meta change — not permanent facts.
+export const SCHEMA_VERSION_INSTAGRAM = 5;
+export const INSTAGRAM_API_VERSION = 'v26.0'; // override via meta brain-graph-version or localStorage
+export const INSTAGRAM_OAUTH_DIALOG = 'https://www.facebook.com/v26.0/dialog/oauth';
+export const INSTAGRAM_TOKEN_ENDPOINT = 'https://graph.facebook.com/v26.0/oauth/access_token';
+export const INSTAGRAM_GRAPH_ENDPOINT = 'https://graph.facebook.com/v26.0';
+export const INSTAGRAM_PUBLISH_LIMITS = { DAILY: 25, HOURLY: 5, NOTE: 'Configurable; see docs/api-compatibility.md — Meta may change limits. Client limit is advisory, not authoritative.' };
 export const INSTAGRAM_REQUIRED_SCOPES = [
   'instagram_basic',
   'instagram_content_publish',
@@ -46,7 +48,9 @@ export const INSTAGRAM_MEDIA_REQUIREMENTS = Object.freeze({
   hashtagMaxCount: 30,
   hashtagMaxLength: 80
 });
-export const INSTAGRAM_PUBLISH_STATES = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
+export const INSTAGRAM_PUBLISH_STATES = ['DRAFT', 'READY', 'AWAITING_APPROVAL', 'SCHEDULED', 'UPLOADING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'CANCELLED'];
+// legacy mapping kept for migration
+export const INSTAGRAM_PUBLISH_STATES_LEGACY = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
 
 // Action verbs grouped for consistency (used by parser + quick actions).
 export const TASK_INTENTS = [

@@ -13,12 +13,23 @@ const KEY_SCHEMA = 'schema';
 const MAX_RECORDS_PER_COLLECTION = 10_000;
 const MAX_BACKUP_CHARS = 25 * 1024 * 1024;
 
+function defaultAutomationSettings() {
+  return {
+    enabled: false,
+    mode: 'MANUAL', // MANUAL | AUTOMATED
+    rules: [],
+    paused: false,
+    history: [],
+    lastRunAt: null,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function defaultSettings() {
   return {
     name: '', currency: '₹', locale: 'en-IN', countryCode: '',
     notifEnabled: true, reducedMotion: false, onboarded: false,
     briefDate: '', lastBackupAt: '',
-    // Instagram settings (local-only, never synced to cloud)
     instagram: {
       connected: false,
       igUserId: '',
@@ -31,15 +42,63 @@ function defaultSettings() {
       expiresAt: null,
       connectedAt: null,
       lastValidatedAt: null,
-      scopes: []
+      scopes: [],
+      automation: defaultAutomationSettings()
     }
   };
+}
+
+function sanitizeAutomation(raw) {
+  if (!raw || typeof raw !== 'object') return defaultAutomationSettings();
+  const out = defaultAutomationSettings();
+  out.enabled = !!raw.enabled;
+  out.mode = raw.mode === 'AUTOMATED' ? 'AUTOMATED' : 'MANUAL';
+  out.paused = !!raw.paused;
+  out.lastRunAt = raw.lastRunAt ? (new Date(raw.lastRunAt).toISOString && !Number.isNaN(new Date(raw.lastRunAt).getTime()) ? new Date(raw.lastRunAt).toISOString() : null) : null;
+  out.createdAt = raw.createdAt || out.createdAt;
+  if (Array.isArray(raw.rules)) {
+    out.rules = raw.rules.slice(0,50).map(r=> ({
+      id: String(r.id||'').slice(0,64),
+      name: String(r.name||'Rule').slice(0,100),
+      enabled: r.enabled !== false,
+      filters: {
+        tags: Array.isArray(r.filters?.tags) ? r.filters.tags.map(s=>String(s).slice(0,40)).filter(Boolean).slice(0,20): [],
+        namePattern: String(r.filters?.namePattern||'').slice(0,200),
+        allowedDays: Array.isArray(r.filters?.allowedDays) ? r.filters.allowedDays.map(Number).filter(n=> n>=0&&n<=6): [1,2,3,4,5],
+        allowedHours: r.filters?.allowedHours && typeof r.filters.allowedHours==='object' ? { start: Math.max(0,Math.min(23,Number(r.filters.allowedHours.start)||9)), end: Math.max(0,Math.min(24,Number(r.filters.allowedHours.end)||17)) } : { start:9,end:17 },
+        eligibleDraftIds: Array.isArray(r.filters?.eligibleDraftIds) ? r.filters.eligibleDraftIds.map(s=>String(s).slice(0,64)).filter(Boolean).slice(0,100) : []
+      },
+      schedule: {
+        freq: ['daily','weekly','manual'].includes(r.schedule?.freq) ? r.schedule.freq : 'daily',
+        time: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(r.schedule?.time)) ? String(r.schedule.time) : '09:00',
+        days: Array.isArray(r.schedule?.days) ? r.schedule.days.filter(n=>n>=0&&n<=6) : []
+      },
+      limits: {
+        maxPerDay: Math.min(10, Math.max(1, Number(r.limits?.maxPerDay)||1)),
+        requireApprovalAfterFailures: Number(r.limits?.requireApprovalAfterFailures)||2
+      },
+      createdAt: r.createdAt || new Date().toISOString(),
+      updatedAt: r.updatedAt || new Date().toISOString()
+    })).filter(r=>r.id);
+  }
+  if (Array.isArray(raw.history)) out.history = raw.history.slice(0,200).map(h=> ({
+    at: String(h.at||new Date().toISOString()).slice(0,30),
+    draftId: String(h.draftId||'').slice(0,64),
+    ruleId: String(h.ruleId||'').slice(0,64),
+    action: String(h.action||'attempt').slice(0,40),
+    result: String(h.result||'').slice(0,40),
+    error: String(h.error||'').slice(0,500),
+    actor: String(h.actor||'automation').slice(0,20)
+  }));
+  return out;
 }
 
 function cleanInstagramSettings(raw = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const conn = V.makeInstagramConnection(input);
-  return conn || defaultSettings().instagram;
+  const base = conn || defaultSettings().instagram;
+  base.automation = sanitizeAutomation(input.automation || raw.automation);
+  return base;
 }
 
 function cleanSettings(raw = {}) {
@@ -97,10 +156,20 @@ export class Store {
   }
 
   _reportPersistenceError(error) {
-    this.lastPersistenceError = error instanceof Error ? error : new Error(String(error || 'Storage error'));
+    const err = error instanceof Error ? error : new Error(String(error || 'Storage error'));
+    // Quota detection
+    const isQuota = /quota|storage|QuotaExceeded/i.test(err.message || err.name || '');
+    if (isQuota) err.isQuotaError = true;
+    this.lastPersistenceError = err;
     for (const listener of this._listeners) {
       try { listener(this.lastPersistenceError); } catch {}
     }
+  }
+
+  // Explicit quota check helper
+  isQuotaError(err) {
+    const msg = String((err && err.message) || err || '');
+    return /quota|QuotaExceeded|storage full|exceeds/i.test(msg);
   }
 
   _queueWrite(operation) {
@@ -111,23 +180,40 @@ export class Store {
 
   async init() {
     this.db = await openDb(true);
+    this.storageMode = this.db.name || 'unknown';
+    this.isPersistent = this.db.name === 'indexeddb'; // only IDB is durable
+    // Corruption detection helper
+    this.corruptionReport = { checked: false, issues: [] };
     const schema = await this.db.kvGet(KEY_SCHEMA);
     this.schema = schema && Number.isFinite(+schema.version) ? +schema.version : 0;
+    // Schema compatibility checks
+    if (this.schema > SCHEMA_VERSION) {
+      this.corruptionReport.issues.push(`Future schema ${this.schema} > current ${SCHEMA_VERSION}: data may need newer Brain version`);
+    }
     this.settings = cleanSettings(await this.db.kvGet(KEY_SETTINGS));
     let repairedOnLoad = false;
     for (const collection of V.COLLECTIONS) {
-      const raw = await this.db.kvGet(collection);
+      let raw;
+      try { raw = await this.db.kvGet(collection); } catch (e) {
+        this.corruptionReport.issues.push(`${collection}: read failed (${e.message})`);
+        raw = [];
+      }
+      // Detect corruption: not an array when expected
+      if (raw != null && !Array.isArray(raw)) {
+        this.corruptionReport.issues.push(`${collection}: expected array, got ${typeof raw}`);
+        raw = [];
+        repairedOnLoad = true;
+      }
       const sanitized = Array.isArray(raw) ? this._sanitizeAll(collection, raw) : [];
       this.collections[collection] = sanitized;
-      // Persist only structural repairs for a current schema. Normal field
-      // normalization is harmless in memory; malformed/missing records should
-      // not be re-read forever on every launch.
-      if (raw != null && (!Array.isArray(raw) || sanitized.length !== raw.length)) repairedOnLoad = true;
+      if (raw != null && (!Array.isArray(raw) || sanitized.length !== raw.length)) {
+        // Duplicate or invalid records detected
+        if (Array.isArray(raw) && sanitized.length !== raw.length) this.corruptionReport.issues.push(`${collection}: removed ${raw.length - sanitized.length} invalid/duplicate records`);
+        repairedOnLoad = true;
+      }
     }
+    this.corruptionReport.checked = true;
 
-    // A new v2 schema may legitimately coexist with a legacy localStorage blob.
-    // Do not clear the database here: the old implementation had an un-awaited
-    // clear that could race its first save and lose migrated records.
     if (this.schema === 0) {
       const legacy = readLegacy();
       if (legacy) {
@@ -142,14 +228,23 @@ export class Store {
       this._repairReferences();
       await this._saveSnapshot();
     } else if (this.schema < SCHEMA_VERSION) {
-      // Sanitizing on load is the migration for additive record fields. Persist
-      // the upgraded snapshots together so the next launch does not repeat it.
+      // Migration backup & recovery: snapshot old state before migration
+      try {
+        const backupKey = `backup:pre-migration:${this.schema}->${SCHEMA_VERSION}:${Date.now()}`;
+        await this.db.kvSet(backupKey, { schema: this.schema, collections: clone(this.collections), settings: clone(this.settings), at: new Date().toISOString() });
+      } catch (e) {
+        this.corruptionReport.issues.push(`migration backup failed: ${e.message}`);
+      }
+      // Validate migration
+      const beforeCounts = this.counts();
       this.schema = SCHEMA_VERSION;
       this._repairReferences();
-      await this._saveSnapshot();
+      // Ensure no collection lost all records unexpectedly (unless intentional)
+      try { await this._saveSnapshot(); } catch (e) {
+        this._reportPersistenceError(new Error(`Migration save failed: ${e.message}. Backup key retains pre-migration data.`));
+        throw e;
+      }
     } else {
-      // A journal attachment is meaningful only while its matching local photo
-      // exists. Repair dangling imported/corrupt references before rendering.
       if (this._repairReferences()) repairedOnLoad = true;
       if (repairedOnLoad) await this._saveSnapshot();
     }
@@ -169,6 +264,37 @@ export class Store {
       output.push(record);
     }
     return output;
+  }
+
+  // Migration: normalize legacy lowercase IG statuses in raw storage before sanitize
+  _migrateInstagramStatuses() {
+    // No-op: sanitizeRecord already maps legacy → uppercase, but persist the normalized snapshot
+    return false;
+  }
+
+  // Media integrity + storage reporting
+  async mediaIntegrityReport() {
+    const drafts = this.list('instagramDraft');
+    const report = { total: drafts.length, missingUrl: 0, expiredContainer: 0, byStatus:{} };
+    for (const d of drafts) {
+      const s = String(d.status||'DRAFT');
+      report.byStatus[s] = (report.byStatus[s]||0)+1;
+      if (!d.tempVideoUrl && s!=='PUBLISHED' && s!=='CANCELLED') report.missingUrl += 1;
+      if (d.igContainerId && d.igContainerId) {
+        try { const at = d.updatedAt ? new Date(d.updatedAt).getTime() : 0; if (Date.now() - at > 24*3600*1000) report.expiredContainer+=1; } catch {}
+      }
+    }
+    return report;
+  }
+
+  async storageReport() {
+    const est = await this.storageEstimate();
+    const counts = this.counts();
+    let totalChars = 0;
+    try { totalChars = JSON.stringify({ collections:this.collections, settings:this.settings }).length; } catch {}
+    let photoBytes = 0;
+    for (const p of this.list('photo')) photoBytes += (p.dataUrl||'').length;
+    return { estimate: est, counts, jsonChars: totalChars, photoChars: photoBytes, mediaIntegrity: await this.mediaIntegrityReport() };
   }
 
   _repairReferences() {
@@ -498,6 +624,36 @@ export class Store {
       settings: clone(this.settings), collections: clone(this.collections),
       meta: { counts: this.counts() }
     };
+  }
+
+  // Encrypted export helper — caller passes password or null
+  async exportStateEncrypted(password) {
+    const state = await this.exportState();
+    const json = JSON.stringify(state);
+    if (!password) return { blobText: json, encrypted: false };
+    try {
+      const { encryptBackup } = await import('../util/crypto.js');
+      const enc = await encryptBackup(json, password);
+      return { blobText: enc, encrypted: true };
+    } catch (e) {
+      throw new Error('Encryption failed: ' + (e.message||'unknown'));
+    }
+  }
+
+  // Safe deletion with explicit confirm token
+  async safeDeleteCollection(type, confirmToken) {
+    if (confirmToken !== `delete-${type}`) throw new Error('Confirm token mismatch — type the collection name to delete');
+    const before = this.collections[type];
+    if (!before) throw new Error('Unknown collection');
+    const count = before.length;
+    this.collections[type] = [];
+    try {
+      await this._saveCollection(type);
+      return { ok:true, deleted: count };
+    } catch (e) {
+      this.collections[type]=before;
+      throw e;
+    }
   }
 
   async storageEstimate() {

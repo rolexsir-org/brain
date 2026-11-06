@@ -17,12 +17,94 @@ export function openInstagramHub(ctx) {
   const body = document.getElementById('sheetBody');
   const title = document.getElementById('sheetTitle');
   if (!body || !title) return;
-  title.textContent = 'Instagram';
+  title.textContent = 'Instagram Workspace';
   body.textContent = '';
   renderConnectionCard(ctx, body);
   renderDraftLibrary(ctx, body);
+  renderQueueSection(ctx, body);
+  renderCalendarSection(ctx, body);
+  renderInsightsSection(ctx, body);
   renderPublishedHistory(ctx, body);
+  renderTransfersInfo(ctx, body);
+  // quick nav
+  const nav=E.div({class:'actbar'});
+  const autoBtn=E.button({class:'ghost',type:'button'},'⚙️ Automation rules');
+  autoBtn.addEventListener('click', async()=>{ const { openInstagramAutomationPanel } = await import('../ui/automationCentre.js'); /* fallback */ try{ const mod=await import('../ui/automationCentre.js'); mod.openAutomationCentre(ctx);}catch{ ctx.toast('Automation centre loading…'); } });
+  const ccBtn=E.button({class:'ghost',type:'button'},'🗂️ Command Centre');
+  ccBtn.addEventListener('click', async()=>{ const mod=await import('../ui/commandCentre.js'); mod.openCommandCentre(ctx); });
+  nav.append(autoBtn, ccBtn);
+  body.append(nav);
   openSheet();
+}
+
+function renderTransfersInfo(ctx, parent){
+  parent.append(E.div({class:'hr'}), E.div({class:'tt'},'Media transfers & privacy'), E.div({class:'note'}, 'Brain prefers official Meta hosting (your short-lived signed URL sent only to Meta). Temp URLs are unguessable, expire quickly, and are deleted after publish. No private URL is logged. See “Media transfers” doc in repo.'), E.a({href:'#', class:'ghost', onclick:(e)=>{ e.preventDefault(); import('./mediaTransfer.js').then(m=>{ const body=document.getElementById('sheetBody'); const note=document.createElement('div'); note.className='note'; note.textContent=m.TRANSFER_DOC.directUploadInvestigation; body.append(note); }); }}, 'Learn how transfers work'));
+}
+
+async function renderQueueSection(ctx, parent){
+  parent.append(E.div({class:'toggle', style:'border:none;padding:6px 0'}, E.div({class:'tt'}, 'Publishing queue')));
+  try{
+    const { getQueue } = await import('./queue.js');
+    const q = await getQueue(ctx.store);
+    if(!q.length) parent.append(E.div({class:'note'},'Queue empty. Schedule a Reel or set a publish time.'));
+    else for(const entry of q.slice(0,10)){
+      const draft = ctx.store.get('instagramDraft', entry.draftId);
+      const row=E.div({class:'srow'}, E.div({class:'em'},'⏳'), E.div({class:'tx'}, E.b({}, draft?draft.videoName:entry.draftId), E.small({}, `Scheduled ${new Date(entry.scheduledAt).toLocaleString()} · attempts ${entry.attempts||0}`)));
+      const cancelBtn=E.button({class:'ghost danger',type:'button'},'Cancel');
+      cancelBtn.addEventListener('click', async()=>{
+        if(!window.confirm('Cancel queued publish?')) return;
+        const { cancelQueueForDraft } = await import('./queue.js');
+        const res=await cancelQueueForDraft(ctx.store, entry.draftId);
+        if(res.ok){ ctx.toast('Cancelled.'); openInstagramHub(ctx);} else ctx.toast(res.error||'Could not cancel');
+      });
+      row.append(cancelBtn);
+      parent.append(row);
+    }
+    if(q.length>10) parent.append(E.div({class:'note'},`Showing 10 of ${q.length} queued.`));
+  } catch(e){ parent.append(E.div({class:'note'},'Queue unavailable')); }
+  parent.append(E.div({class:'hr'}));
+}
+
+function renderCalendarSection(ctx, parent){
+  const drafts=ctx.store.list('instagramDraft').slice().sort((a,b)=> String(b.scheduledAt||b.createdAt).localeCompare(String(a.scheduledAt||a.createdAt)));
+  parent.append(E.div({class:'toggle', style:'border:none;padding:6px 0'}, E.div({class:'tt'}, 'Content calendar')));
+  if(!drafts.length) parent.append(E.div({class:'note'},'No scheduled content yet.'));
+  else {
+    // simple month view grouped by date
+    const byDate={};
+    for(const d of drafts){ const key=d.scheduledAt? String(d.scheduledAt).slice(0,10): (d.publishedAt? String(d.publishedAt).slice(0,10): String(d.createdAt).slice(0,10)); (byDate[key]=byDate[key]||[]).push(d); }
+    for(const date of Object.keys(byDate).sort()){
+      parent.append(E.div({class:'dn', style:'margin-top:6px;font-weight:600'}, date));
+      for(const d of byDate[date]){
+        const row=E.div({class:'srow', style:'padding:4px 0'});
+        row.append(E.div({class:'em'}, d.status==='PUBLISHED'?'✅':d.status==='SCHEDULED'?'📅':'🎬'), E.div({class:'tx'}, E.b({}, d.videoName), E.small({}, `${d.status} · ${(d.caption||'').slice(0,40)}`)));
+        row.addEventListener('click', ()=> openDraftEditor(ctx, d.id));
+        row.style.cursor='pointer';
+        parent.append(row);
+      }
+    }
+  }
+  parent.append(E.div({class:'hr'}));
+}
+
+async function renderInsightsSection(ctx, parent){
+  parent.append(E.div({class:'toggle', style:'border:none;padding:6px 0'}, E.div({class:'tt'}, 'Insights')));
+  try{
+    const { localInsights } = await import('./insights.js');
+    const li=localInsights(ctx.store);
+    parent.append(E.div({class:'note'}, li.local ? `Local summary — Total drafts: ${li.totalDrafts}, Queue: ${li.queueLen}, Published this month: ${li.publishedThisMonth}, Failed: ${li.failed}` : 'No insights'));
+    if(ctx.store.settings.instagram?.connected){
+      const btn=E.button({class:'ghost', type:'button'}, 'Fetch from Instagram');
+      btn.addEventListener('click', async()=>{
+        const { fetchInsights, formatInsightsReport } = await import('./insights.js');
+        const conn=ctx.store.settings.instagram;
+        const res=await fetchInsights(conn.igUserId, conn.accessToken);
+        ctx.toast(formatInsightsReport(res));
+      });
+      parent.append(btn);
+    }
+  } catch(e){ parent.append(E.div({class:'note'},'Insights unavailable')); }
+  parent.append(E.div({class:'hr'}));
 }
 
 /** Connection card */
@@ -232,7 +314,7 @@ async function handleVideoSelected(ctx, file) {
 
 // ── Draft editor ───────────────────────────────────────────────────────────
 
-export function openDraftEditor(ctx, draftId, fileOverride) {
+export async function openDraftEditor(ctx, draftId, fileOverride) {
   const draft = ctx.store.get('instagramDraft', draftId);
   if (!draft) { toastFn(ctx, 'Draft not found.'); return; }
   const file = fileOverride || pendingVideoFile;
@@ -254,7 +336,44 @@ export function openDraftEditor(ctx, draftId, fileOverride) {
   }
   body.append(previewWrap);
   body.append(E.div({ class: 'meta', style: 'margin-top:8px;text-align:center' }, `${draft.status} · ${draft.videoName}`));
+  // History / cover / schedule extras
+  const extrasWrap=E.div({style:'margin-top:8px'});
+  if(draft.history && draft.history.length){
+    const histBtn=E.button({class:'ghost',type:'button'},`History (${draft.history.length})`);
+    histBtn.addEventListener('click',()=>{ const ul=E.div({}); for(const h of draft.history.slice(-10)) ul.append(E.div({class:'note'}, `${h.at.slice(0,16)} — ${h.action} (${h.fromStatus}) ${h.details? '· '+h.details.slice(0,80):''}`)); extrasWrap.append(ul); histBtn.disabled=true; });
+    extrasWrap.append(histBtn);
+  }
+  body.append(extrasWrap);
 
+  // Cover picker
+  try{
+    const { coverPickerUI } = await import('./coverPicker.js');
+    const coverWrap = coverPickerUI(draft, async ({coverDataUrl, coverTimeSec})=>{
+      await ctx.store.update('instagramDraft', draftId, { coverDataUrl, coverTimeSec, coverUrl: null });
+      ctx.toast('Cover saved.');
+    });
+    body.append(coverWrap);
+  } catch{}
+  if(draft.coverDataUrl){
+    body.append(E.div({class:'center', style:'margin-top:8px'}, E.img({src:draft.coverDataUrl, alt:'Cover', style:'width:120px;height:200px;object-fit:cover;border-radius:8px;border:1px solid var(--line)'})));
+  }
+  // Schedule controls
+  const schedWrap=E.div({class:'field'});
+  const schedInput=E.input({type:'datetime-local', class:'ed', value: draft.scheduledAt? toLocalInput(draft.scheduledAt):''});
+  schedWrap.append(E.label({},'Schedule publish (local reminder/queue)'), schedInput, E.div({class:'note'},'Browser cannot publish while closed — queued items run when Brain is next open.'));
+  body.append(schedWrap);
+  const schedBtn=E.button({class:'ghost', type:'button'},'Save schedule');
+  schedBtn.addEventListener('click', async()=>{
+    const val=schedInput.value? new Date(schedInput.value).toISOString(): null;
+    await ctx.store.update('instagramDraft', draftId, { scheduledAt: val, status: val? 'SCHEDULED': draft.status });
+    if(val){
+      try{ const { enqueue }=await import('./queue.js'); await enqueue(ctx.store, draftId, { scheduledAt: val }); }catch{}
+    }
+    ctx.toast(val? 'Scheduled — will publish when Brain is open at that time.':'Schedule cleared.');
+  });
+  body.append(schedBtn);
+  // Status / publish state hint
+  body.append(E.div({class:'note'}, `Current status: ${draft.status} — ${['DRAFT','READY','AWAITING_APPROVAL','SCHEDULED','UPLOADING','PROCESSING','PUBLISHED','FAILED','CANCELLED'].includes(draft.status)? '':'legacy; will migrate on save'}`));
   // Caption
   const capInput = E.textarea({ class: 'ed', rows: '3', placeholder: 'Write a caption… (2200 chars max)', style: 'margin-top:10px' }, draft.caption || '');
   body.append(E.div({ class: 'field' }, E.label({}, 'Caption'), capInput));
@@ -300,11 +419,14 @@ export function openDraftEditor(ctx, draftId, fileOverride) {
     if (!vCap.ok) { toastFn(ctx, vCap.errors[0]); saveBtn.disabled = false; return; }
     const vHash = validateHashtags(hashtags);
     if (!vHash.ok) { toastFn(ctx, vHash.errors[0]); saveBtn.disabled = false; return; }
+    const hasCaptionOrTags = !!(capInput.value.trim() || hashtags.length);
+    const newStatus = hasCaptionOrTags ? 'READY' : 'DRAFT';
     const updated = await ctx.store.update('instagramDraft', draftId, {
       caption: capInput.value.trim().slice(0, 2200),
       hashtags,
       tempVideoUrl: hostInput.value.trim().slice(0, 2000) || null,
-      status: (capInput.value.trim() || hashtags.length) ? 'ready' : 'draft'
+      videoUrl: hostInput.value.trim().slice(0, 2000) || null,
+      status: newStatus
     });
     if (!updated) toastFn(ctx, 'Could not save — storage error.');
     else { toastFn(ctx, 'Draft saved.'); openInstagramHub(ctx); }
@@ -313,15 +435,22 @@ export function openDraftEditor(ctx, draftId, fileOverride) {
 
   const previewPublishBtn = E.button({ class: 'ghost', type: 'button' }, 'Eye Preview publishing…');
   previewPublishBtn.addEventListener('click', async () => {
-    // Save first
     const hashtags = hashInput.value.split(',').map(x => x.trim().replace(/^#/, '')).filter(Boolean);
-    await ctx.store.update('instagramDraft', draftId, { caption: capInput.value.trim(), hashtags, tempVideoUrl: hostInput.value.trim() || null });
+    await ctx.store.update('instagramDraft', draftId, { caption: capInput.value.trim(), hashtags, tempVideoUrl: hostInput.value.trim() || null, videoUrl: hostInput.value.trim() || null });
     const fresh = ctx.store.get('instagramDraft', draftId);
     const conn = getInstagramConnection(ctx);
     const prep = preparePublishPreview(fresh, conn);
     if (!prep.ok) { toastFn(ctx, prep.error); return; }
     openPublishConfirm(ctx, draftId, prep.preview);
   });
+  // Mark ready/awaiting approval transition
+  if(['DRAFT','READY'].includes(String(draft.status).toUpperCase())){
+    const readyBtn=E.button({class:'ghost', type:'button'},'Mark Ready');
+    readyBtn.addEventListener('click', async()=>{ await ctx.store.update('instagramDraft', draftId, { status:'READY' }); ctx.toast('Draft marked Ready.'); openDraftEditor(ctx, draftId); });
+    const awaitBtn=E.button({class:'ghost', type:'button'},'Submit for approval');
+    awaitBtn.addEventListener('click', async()=>{ await ctx.store.update('instagramDraft', draftId, { status:'AWAITING_APPROVAL' }); ctx.toast('Awaiting approval.'); openDraftEditor(ctx, draftId); });
+    body.append(E.div({class:'actbar'}, readyBtn, awaitBtn));
+  }
 
   const deleteBtn = E.button({ class: 'ghost danger', type: 'button' }, 'Delete draft');
   deleteBtn.addEventListener('click', async () => {
@@ -431,6 +560,8 @@ function renderPublishedHistory(ctx, parent) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function toLocalInput(iso){ try{ const d=new Date(iso); if(Number.isNaN(d.getTime())) return ''; const pad=n=> String(n).padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; } catch{ return ''; } }
 
 function getInstagramConnection(ctx) {
   if (ctx && ctx.store && ctx.store.settings && ctx.store.settings.instagram) return ctx.store.settings.instagram;

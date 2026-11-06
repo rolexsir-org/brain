@@ -4,7 +4,7 @@
 
 import { CONFIG } from './config.js';
 
-function apiBase() { return CONFIG.graphBase || 'https://graph.facebook.com/v21.0'; }
+function apiBase() { return CONFIG.graphBase || 'https://graph.facebook.com/v26.0'; }
 
 function authErrorFrom(body, status) {
   if (!body) return `Request failed (${status})`;

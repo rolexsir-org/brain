@@ -72,6 +72,9 @@ export class Brain {
     const pendingExternal = this._finishExternalChoice(low, t);
     if (pendingExternal) return pendingExternal;
 
+    // ---- Instagram extended intents + command/automation centre ----
+    const ext = this._instagramExtendedIntent(low, t);
+    if (ext) return ext;
     // ---- Instagram Business intents (explicit, never auto-publish) ----
     const ig = this._instagramIntent(low, t);
     if (ig) return ig;
@@ -126,8 +129,73 @@ Stock — “I have 5kg rice”, “used 2kg rice”
 Health — “took paracetamol at 8am”, “walked 8000 steps”, “weight 68kg”
 Habits — “did yoga today”
 Journal — “I felt great today”
-Instagram — “connect Instagram”, “prepare this video as a Reel”, “create a caption for this Reel”, “show my Instagram drafts”, “show the Reel I published yesterday”, “disconnect Instagram”
+Instagram — “connect Instagram”, “prepare this video as a Reel”, “create a caption for this Reel”, “show my Instagram drafts”, “show the Reel I published yesterday”, “disconnect Instagram”, “what's in my publishing queue?”, “prepare 3 Reels”, “write captions for my Reels”, “schedule for Friday”, “awaiting approval”, “show failed Reels”, “pause automation”, “stop scheduled”, “published this month”
+Command Centre — “open command centre”, “find my meeting notes”
+Automation Centre — “open automation centre”
 Search & questions — “what's coming up?”, “how much did I spend this month?”, “show everything about John”, “who owes me?”`);
+  }
+
+  _instagramExtendedIntent(low, t){
+    const s=this.store;
+    if(/command centre|command center|unified.*search|what'?s pending|pending actions/i.test(low)){
+      return reply('Opening your Command Centre — search across tasks, notes, people, money, and Reels in one place.',[],{id:'commandCentre.open', label:'🗂️ Open Command Centre', args:{}});
+    }
+    if(/automation centre|automation center|control centre|manage.*automation/i.test(low)){
+      return reply('Opening Automation Centre — see permissions, scheduled jobs, approvals, and recent activity.',[],{id:'automation.centre.open', label:'🤖 Automation Centre', args:{}});
+    }
+    if(/what'?s in.*queue|publishing queue|show.*queue/i.test(low) && /queue/i.test(low)){
+      const drafts=s.list('instagramDraft').filter(d=> ['READY','AWAITING_APPROVAL','SCHEDULED','UPLOADING','PROCESSING'].includes(String(d.status).toUpperCase()));
+      if(!drafts.length) return reply('Publishing queue is empty.');
+      return reply(`In your queue: ${drafts.length} Reel${drafts.length===1?'':'s'}`, drafts.slice(0,8).map(d=>({kind:'instagramDraft', id:d.id})),{id:'instagram.open', label:'📼 Open Instagram', args:{id:'hub'}});
+    }
+    let m=t.match(/prepare\s+(\d+)\s+reels?/i);
+    if(m){
+      const n=Number(m[1]);
+      return reply(`Select ${n} videos from your device to prepare as Reels. I will create drafts for each — you will add captions and confirm each publishing.`,[],{id:'instagram.draft.create', label:'📼 Select Reel video', args:{count:n}});
+    }
+    if(/write.*captions?|captions? for.*reels?|create captions?/i.test(low)){
+      const drafts=s.list('instagramDraft').filter(d=> !d.caption || !d.caption.trim());
+      if(!drafts.length) return reply('All your drafts already have captions. Open any draft to edit it.');
+      return reply(`You have ${drafts.length} draft${drafts.length===1?'':'s'} without captions:`, drafts.slice(0,5).map(d=>({kind:'instagramDraft', id:d.id})),{id:'instagram.draft.preview', label:'✏️ Edit caption', args:{kind:'instagramDraft', id:drafts[0].id}});
+    }
+    if(/schedule.*for friday|schedule.*friday/i.test(low)){
+      const drafts=s.list('instagramDraft').filter(d=> String(d.status).toUpperCase()!=='PUBLISHED');
+      if(!drafts.length) return reply('No drafts to schedule. Prepare a video first.');
+      const draft=drafts[0];
+      const now=new Date(); const target=new Date(now); const day=target.getDay(); const diff=(5-day+7)%7||7; target.setDate(target.getDate()+diff); target.setHours(9,0,0,0);
+      return reply(`Ready to schedule “${draft.videoName}” for Friday ${target.toLocaleDateString()} at 9am. You will get a reminder — Brain cannot auto-publish while closed.`,[{kind:'instagramDraft', id:draft.id}],{id:'instagram.schedule', label:'⏰ Schedule for Friday', args:{kind:'instagramDraft', id:draft.id, when:'friday'}});
+    }
+    if(/awaiting.*approval|pending approval/i.test(low)){
+      const pending=s.list('instagramDraft').filter(d=> ['AWAITING_APPROVAL','READY'].includes(String(d.status).toUpperCase()));
+      if(!pending.length) return reply('No Reels awaiting approval.');
+      return reply(`Awaiting approval: ${pending.length}`, pending.slice(0,8).map(d=>({kind:'instagramDraft', id:d.id})));
+    }
+    if(/(failed.*(reels?|drafts?)|show.*failed)/i.test(low)){
+      const failed=s.list('instagramDraft').filter(d=> String(d.status).toUpperCase()==='FAILED');
+      if(!failed.length) return reply('No failed Reels — all good!');
+      return reply(`${failed.length} failed Reel${failed.length===1?'':'s'}:`, failed.slice(0,8).map(d=>({kind:'instagramDraft', id:d.id})));
+    }
+    if(/pause automation/i.test(low)){
+      return reply('Pausing automation — manual approval will be required.',[],{id:'instagram.automation.pause', label:'⏸ Pause automation', args:{}});
+    }
+    if(/stop scheduled|stop.*queue|cancel scheduled/i.test(low)){
+      const sched=s.list('instagramDraft').filter(d=> String(d.status).toUpperCase()==='SCHEDULED');
+      if(!sched.length) return reply('No scheduled Reels to stop.');
+      return reply(`${sched.length} scheduled Reel${sched.length===1?'':'s'}:`, sched.map(d=>({kind:'instagramDraft', id:d.id})),{id:'instagram.queue.cancel', label:'Cancel scheduled', args:{kind:'instagramDraft', id:sched[0].id}});
+    }
+    if(/published this month|posted this month/i.test(low)){
+      const month = new Date().toISOString().slice(0,7);
+      const pubs=[...s.list('instagramPublication'), ...s.list('instagramDraft').filter(d=> String(d.status).toUpperCase()==='PUBLISHED')].filter(d=> String(d.publishedAt||'').slice(0,7)===month);
+      if(!pubs.length) return reply('No Reels published this month.');
+      return reply(`${pubs.length} Reel${pubs.length===1?'':'s'} published this month:`, pubs.slice(0,8).map(d=>({kind: d.type==='instagramPublication'? 'instagramPublication':'instagramDraft', id:d.id})));
+    }
+    if(/^find\b/i.test(t) && /(journal|note|content|calendar|reels?)/i.test(low)){
+      const q=t.replace(/^find\b/i,'').trim()|| low;
+      const res=searchAll(q,s);
+      if(!res.length) return reply(`Nothing found for “${q}”.`);
+      return reply(`Found ${res.length} result${res.length===1?'':'s'}:`, res.slice(0,10).map(x=>({kind:x.type,id:x.record.id})),{id:'commandCentre.open', label:'🗂️ Open Command Centre',args:{}});
+    }
+    return null;
   }
 
   /** Find people by name, alias, number, email, relationship, or username. */

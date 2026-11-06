@@ -1,8 +1,9 @@
 // Instagram publishing workflow — enforces explicit approval, idempotency, and
 // honest status reporting. Never publish without user confirmation.
 
-import { publishReel, fetchPermalink } from './api.js';
+import { publishReel, fetchPermalink, pollContainerStatus } from './api.js';
 import { buildCaptionWithHashtags } from './media.js';
+import { STATES, normalizeStatus, canTransition, isContainerExpired, isDuplicatePublish, buildHistoryEntry, checkRateLimit } from './stateMachine.js';
 
 const PUBLISH_DEBOUNCE_MS = 3000;
 
@@ -50,32 +51,60 @@ export function preparePublishPreview(draft, connection) {
  * Enforces: no duplicate publish for same draft in publishing state,
  * caption/hashtag honesty, and failure reporting.
  */
-export async function executePublish(store, draftId, connection, { onProgress } = {}) {
+export async function executePublish(store, draftId, connection, { onProgress, actor='user' } = {}) {
   const draft = store.get('instagramDraft', draftId);
   if (!draft) return { ok: false, error: 'Draft not found.' };
-  if (draft.status === 'publishing') {
-    return { ok: false, error: 'This Reel is already publishing. Please wait.', duplicate: true };
-  }
-  if (draft.status === 'published') {
-    return { ok: false, error: 'This Reel is already published.', duplicate: true };
-  }
+  const curStatus = normalizeStatus(draft.status);
+  const dup = isDuplicatePublish(draft);
+  if (dup.duplicate) return { ok: false, error: dup.reason, duplicate: true };
+  if (curStatus === STATES.CANCELLED) return { ok: false, error: 'Draft was cancelled.' };
   if (!connection || !connection.connected) return { ok: false, error: 'Instagram disconnected. Reconnect first.' };
   if (isExpired(connection)) return { ok: false, error: 'Instagram access expired. Reconnect to publish.', authExpired: true };
 
   const preview = preparePublishPreview(draft, connection);
   if (!preview.ok) return preview;
 
-  // Idempotency lock: mark as publishing before network
+  // Check for expired container — require recreate
+  if (draft.igContainerId && isContainerExpired(draft.updatedAt)) {
+    // Log expiry and clear stale container
+    await store.update('instagramDraft', draftId, { igContainerId: null, lastError: 'Previous container expired — creating fresh one' });
+  }
+
+  // Rate limit check
+  const pubs = store.list('instagramPublication');
+  const rate = checkRateLimit(pubs);
+  if (!rate.ok) return { ok: false, error: rate.reason };
+
+  // Permission mode check for automation actor
+  if (actor === 'automation') {
+    const automation = store.settings?.instagram?.automation;
+    if (!automation || !automation.enabled || automation.paused || automation.mode !== 'AUTOMATED') {
+      return { ok: false, error: 'Automation disabled or paused — manual approval required.' };
+    }
+  }
+
+  // Enforce allowed transition
+  let target = STATES.UPLOADING;
+  if (!canTransition(curStatus, target)) {
+    // allow AWAITING_APPROVAL → UPLOADING
+    if (curStatus === STATES.AWAITING_APPROVAL || curStatus === STATES.SCHEDULED || curStatus === STATES.READY || curStatus === STATES.FAILED) target = STATES.UPLOADING;
+    else return { ok: false, error: `Cannot publish from status ${curStatus}.` };
+  }
+
+  // Idempotency lock: mark as UPLOADING → PROCESSING pipeline
   const locked = await store.update('instagramDraft', draftId, {
-    status: 'publishing',
+    status: STATES.UPLOADING,
     lastError: '',
-    retryCount: (draft.retryCount || 0) + 1
+    retryCount: (draft.retryCount || 0) + 1,
+    history: [...(draft.history||[]), buildHistoryEntry({ ...draft, status: curStatus }, 'publish_attempt', { actor })].slice(-100)
   });
   if (!locked) return { ok: false, error: 'Could not lock draft for publishing. Try again.' };
 
   const report = (stage, msg) => { if (onProgress) try { onProgress(stage, msg); } catch {} };
 
   report('container', 'Creating media container…');
+  // interim state: UPLOADING → PROCESSING
+  await store.update('instagramDraft', draftId, { status: STATES.PROCESSING });
   let result;
   try {
     result = await publishReel(connection.igUserId, {
@@ -91,10 +120,12 @@ export async function executePublish(store, draftId, connection, { onProgress } 
 
   if (!result.ok) {
     const isAuth = result.authExpired || /expired|revoked|permission/i.test(result.error || '');
+    const isContainerErr = /expired|container|not found/i.test(result.error||'');
     await store.update('instagramDraft', draftId, {
-      status: isAuth ? 'failed' : 'failed',
+      status: STATES.FAILED,
       lastError: result.error || 'Unknown error',
-      igContainerId: result.containerId || draft.igContainerId || null
+      igContainerId: isContainerErr ? null : (result.containerId || draft.igContainerId || null),
+      history: [...((store.get('instagramDraft',draftId)?.history)||[]), buildHistoryEntry({ ...draft, status: STATES.PROCESSING }, 'publish_failed', { error: result.error, actor })].slice(-100)
     });
     return { ok: false, error: result.error, stage: result.stage || 'unknown', authExpired: isAuth };
   }
@@ -107,12 +138,13 @@ export async function executePublish(store, draftId, connection, { onProgress } 
   } catch {}
 
   const updated = await store.update('instagramDraft', draftId, {
-    status: 'published',
+    status: STATES.PUBLISHED,
     publishedAt: nowISO(),
     igMediaId: result.mediaId,
     igContainerId: result.containerId,
     permalink,
-    lastError: ''
+    lastError: '',
+    history: [...((store.get('instagramDraft',draftId)?.history)||[]), buildHistoryEntry({ ...draft, status: STATES.PUBLISHED }, 'published', { actor })].slice(-100)
   });
 
   // Also record in publication history
@@ -126,12 +158,49 @@ export async function executePublish(store, draftId, connection, { onProgress } 
       hashtags: draft.hashtags || [],
       videoName: draft.videoName,
       publishedAt: nowISO(),
-      status: 'published'
+      status: 'PUBLISHED'
     });
+  } catch {}
+
+  // cleanup tempVideoUrl after success for privacy
+  try {
+    if (permalink) await store.update('instagramDraft', draftId, { tempVideoUrl: null, videoUrl: null });
   } catch {}
 
   report('done', permalink ? `Published: ${permalink}` : 'Published successfully.');
   return { ok: true, mediaId: result.mediaId, permalink, draft: updated };
+}
+
+export async function recoverInterruptedPublishes(store) {
+  // On boot, any UPLOADING/PROCESSING drafts are stale (page closed mid-publish)
+  // Check container status if containerId exists, else mark FAILED with guidance
+  const drafts = store.list('instagramDraft');
+  for (const d of drafts) {
+    const s = normalizeStatus(d.status);
+    if (s === STATES.UPLOADING || s === STATES.PROCESSING) {
+      if (d.igContainerId && d.igContainerId.trim()) {
+        // Try to poll container status
+        try {
+          const token = store.settings?.instagram?.accessToken;
+          if (token) {
+            const st = await pollContainerStatus(d.igContainerId, token);
+            if (st.ok) {
+              if (st.status === 'FINISHED' || st.status === 'PUBLISHED') {
+                await store.update('instagramDraft', d.id, { status: STATES.PUBLISHED, permalink: st.permalink||d.permalink||null });
+                continue;
+              } else if (st.status === 'ERROR' || st.status === 'FAILED') {
+                await store.update('instagramDraft', d.id, { status: STATES.FAILED, lastError: st.error||'Container failed on recovery' });
+                continue;
+              }
+            }
+          }
+        } catch {}
+        await store.update('instagramDraft', d.id, { status: STATES.FAILED, lastError: 'Interrupted publish — container status unknown. Retry publishing.' });
+      } else {
+        await store.update('instagramDraft', d.id, { status: STATES.FAILED, lastError: 'Interrupted upload — no container created. Retry.' });
+      }
+    }
+  }
 }
 
 function isExpired(conn) {
