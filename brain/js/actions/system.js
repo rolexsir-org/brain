@@ -18,7 +18,18 @@ export const ACTION = Object.freeze({
   TASK_COMPLETE: 'task.complete', TASK_REOPEN: 'task.reopen',
   REMINDER_COMPLETE: 'reminder.complete', REMINDER_SNOOZE: 'reminder.snooze',
   DEBT_TOGGLE: 'debt.toggle', STOCK_BUMP: 'stock.bump', HABIT_LOG: 'habit.log',
-  LOCATION_CURRENT: 'location.current'
+  LOCATION_CURRENT: 'location.current',
+  INSTAGRAM_CONNECT: 'instagram.connect',
+  INSTAGRAM_DISCONNECT: 'instagram.disconnect',
+  INSTAGRAM_CHECK: 'instagram.check',
+  INSTAGRAM_OPEN: 'instagram.open',
+  INSTAGRAM_DRAFT_CREATE: 'instagram.draft.create',
+  INSTAGRAM_DRAFT_EDIT: 'instagram.draft.edit',
+  INSTAGRAM_DRAFT_DELETE: 'instagram.draft.delete',
+  INSTAGRAM_DRAFT_PREVIEW: 'instagram.draft.preview',
+  INSTAGRAM_PUBLISH_PREVIEW: 'instagram.publish.preview',
+  INSTAGRAM_PUBLISH: 'instagram.publish',
+  INSTAGRAM_SCHEDULE: 'instagram.schedule'
 });
 
 export function makeAction(id, label, args = {}) { return { id, label, args }; }
@@ -55,6 +66,17 @@ export function canOffer(id, args = {}, { caps = {}, settings = {} } = {}) {
     case ACTION.LOCATION_CURRENT: return !!(caps.geolocation || {}).supported;
     case ACTION.PHOTO_VIEW: return hasPhoto(args.dataUrl);
     case ACTION.PHOTO_DOWNLOAD: return hasPhoto(args.dataUrl);
+    case ACTION.INSTAGRAM_CONNECT: return true;
+    case ACTION.INSTAGRAM_DISCONNECT: return !!(settings && settings.instagram && settings.instagram.connected);
+    case ACTION.INSTAGRAM_CHECK: return !!(settings && settings.instagram && settings.instagram.connected);
+    case ACTION.INSTAGRAM_OPEN: return !!(args.url);
+    case ACTION.INSTAGRAM_DRAFT_CREATE: return !!(caps.files || {}).picker;
+    case ACTION.INSTAGRAM_DRAFT_EDIT: return true;
+    case ACTION.INSTAGRAM_DRAFT_DELETE: return true;
+    case ACTION.INSTAGRAM_DRAFT_PREVIEW: return true;
+    case ACTION.INSTAGRAM_PUBLISH_PREVIEW: return !!(settings && settings.instagram && settings.instagram.connected);
+    case ACTION.INSTAGRAM_PUBLISH: return !!(settings && settings.instagram && settings.instagram.connected);
+    case ACTION.INSTAGRAM_SCHEDULE: return true;
     default: return true;
   }
 }
@@ -159,6 +181,20 @@ export function availableActions(kind, record, context = {}) {
       }
       push(makeAction(ACTION.RECORD_EDIT, 'Edit', { kind, id: record.id }));
       push(makeAction(ACTION.RECORD_DELETE, 'Delete', { kind, id: record.id }));
+      break;
+    case 'instagramDraft': {
+      const isPublished = record.status === 'published';
+      const igConnected = !!(c.settings && c.settings.instagram && c.settings.instagram.connected);
+      push(makeAction(ACTION.INSTAGRAM_DRAFT_PREVIEW, 'Edit', { kind, id: record.id }));
+      if (!isPublished) {
+        push(makeAction(ACTION.INSTAGRAM_DRAFT_DELETE, 'Delete', { kind, id: record.id }));
+        if (igConnected) push(add(ACTION.INSTAGRAM_PUBLISH_PREVIEW, 'Publish…', { kind, id: record.id }));
+      }
+      if (record.permalink) push(add(ACTION.OPEN, 'View on Instagram', { url: record.permalink }));
+      break;
+    }
+    case 'instagramPublication':
+      if (record.permalink) push(add(ACTION.OPEN, 'View on Instagram', { url: record.permalink }));
       break;
     default:
       break;

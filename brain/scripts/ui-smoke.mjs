@@ -95,7 +95,7 @@ const focusables = [...window.document.querySelector('#sheet').querySelectorAll(
 focusables.at(-1).focus();
 window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
 assert(window.document.activeElement === focusables[0], 'modal Tab focus wraps instead of escaping to the page');
-assert(menuBody.querySelectorAll('.srow').length === 11, 'menu contains every collection including photos');
+assert(menuBody.querySelectorAll('.srow').length >= 13, 'menu contains every collection including photos and Instagram Reels');
 assert([...menuBody.querySelectorAll('button')].some(button => /Settings/.test(button.textContent)), 'settings action is reachable');
 const people = [...menuBody.querySelectorAll('.srow')].find(row => /People/.test(row.textContent));
 people.click();

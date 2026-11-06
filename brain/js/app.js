@@ -35,7 +35,8 @@ const SUGGESTIONS = [
   { text: 'spent 850 on groceries', label: '💰 Spent' },
   { text: 'Priya’s birthday is March 12', label: '🎂 Birthday' },
   { text: 'add a photo to my journal', label: '📷 Photo' },
-  { text: 'share today’s plan', label: '🔗 Share' }
+  { text: 'share today’s plan', label: '🔗 Share' },
+  { text: 'open Instagram', label: '📸 Instagram' }
 ];
 
 async function boot() {
@@ -77,6 +78,7 @@ async function boot() {
 
   setTitle();
   await handleNotificationLaunch();
+  await handleInstagramCallback();
   showWelcome();
   scheduler.start();
   showBriefOnce();
@@ -379,7 +381,8 @@ function openMenu() {
 
   const sections = [
     ['task', 'Tasks'], ['reminder', 'Reminders'], ['note', 'Notes'], ['person', 'People'], ['photo', 'Photos'],
-    ['event', 'Events'], ['money', 'Money'], ['debt', 'Debts'], ['stockItem', 'Stock'], ['habit', 'Habits'], ['journal', 'Journal']
+    ['event', 'Events'], ['money', 'Money'], ['debt', 'Debts'], ['stockItem', 'Stock'], ['habit', 'Habits'], ['journal', 'Journal'],
+    ['instagramDraft', 'Instagram Reels'], ['instagramPublication', 'Published Reels']
   ];
   for (const [kind, label] of sections) {
     const row = E.button({ class: 'srow', type: 'button' },
@@ -388,6 +391,17 @@ function openMenu() {
     row.addEventListener('click', () => { closeSheet(); listKind(kind); });
     body.append(row);
   }
+  body.append(E.div({ class: 'hr' }));
+  // Instagram — prominent entry
+  const ig = store.settings && store.settings.instagram ? store.settings.instagram : { connected: false };
+  const igLabel = ig.connected ? `Instagram · @${ig.username || 'connected'}` : 'Instagram · connect Business account';
+  const igHint = ig.connected ? 'Reels, drafts, publishing' : 'Publish approved Reels (explicit approval required)';
+  const igRow = E.button({ class: 'srow', type: 'button' },
+    E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5);color:#fff' }, '📸'),
+    E.div({ class: 'tx' }, E.b({}, igLabel), E.small({}, igHint))
+  );
+  igRow.addEventListener('click', () => { closeSheet(); runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } }); });
+  body.append(igRow);
   body.append(E.div({ class: 'hr' }));
   const caps = getCaps();
   if (caps.files.picker) body.append(menuButton('🖼️ Add a photo', () => { closeSheet(); runAction({ id: ACTION.PHOTO_PICK, args: {} }); }));
@@ -405,13 +419,17 @@ function sectionHint(kind) {
     task: 'Complete, edit, reschedule or delete', reminder: 'Snooze, complete, edit or delete', note: 'Copy, share, edit or delete',
     person: 'Call, text, email, map or copy', photo: 'View, save, share or delete', event: 'Calendar, maps, share or edit',
     money: 'Review, copy, share, edit or delete', debt: 'Settle, edit or delete', stockItem: 'Adjust, review history, edit or delete',
-    habit: 'Log, edit or delete', journal: 'Share, edit or delete'
+    habit: 'Log, edit or delete', journal: 'Share, edit or delete', instagramDraft: 'Edit, publish, or delete drafts', instagramPublication: 'Published Reels history'
   };
   return hints[kind] || '';
 }
 function listKind(kind) {
+  if (kind === 'instagramDraft' || kind === 'instagramPublication') {
+    runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } });
+    return;
+  }
   const items = store.list(kind);
-  const label = ({ task: 'tasks', reminder: 'reminders', note: 'notes', person: 'people', photo: 'photos', event: 'events', money: 'money records', debt: 'debts', stockItem: 'stock items', habit: 'habits', journal: 'journal entries' })[kind] || kind;
+  const label = ({ task: 'tasks', reminder: 'reminders', note: 'notes', person: 'people', photo: 'photos', event: 'events', money: 'money records', debt: 'debts', stockItem: 'stock items', habit: 'habits', journal: 'journal entries', instagramDraft: 'Reel drafts', instagramPublication: 'published Reels' })[kind] || kind;
   if (!items.length) { pushBot(`No ${label} yet.`); return; }
   const latest = items.slice().sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt))).slice(0, 40);
   pushBot(`Your ${label}:`, latest.map(record => ({ kind, id: record.id })));
@@ -709,6 +727,18 @@ async function runAction(action) {
       case ACTION.DEBT_TOGGLE: return toggleDebt(args.id);
       case ACTION.STOCK_BUMP: return bumpStock(args.id, args.delta);
       case ACTION.HABIT_LOG: return logHabit(args.id);
+      // ── Instagram Business Integration ──────────────────────────────
+      case ACTION.INSTAGRAM_OPEN: return openInstagramHub();
+      case ACTION.INSTAGRAM_CONNECT: return openInstagramHub();
+      case ACTION.INSTAGRAM_DISCONNECT: return handleInstagramDisconnect();
+      case ACTION.INSTAGRAM_CHECK: return handleInstagramCheck();
+      case ACTION.INSTAGRAM_DRAFT_CREATE: return handleInstagramDraftCreate();
+      case ACTION.INSTAGRAM_DRAFT_EDIT:
+      case ACTION.INSTAGRAM_DRAFT_PREVIEW: return handleInstagramDraftPreview(args.kind, args.id);
+      case ACTION.INSTAGRAM_DRAFT_DELETE: return handleInstagramDraftDelete(args.kind, args.id);
+      case ACTION.INSTAGRAM_PUBLISH_PREVIEW: return handleInstagramPublishPreview(args.kind, args.id);
+      case ACTION.INSTAGRAM_PUBLISH: return handleInstagramPublish(args.kind, args.id);
+      case ACTION.INSTAGRAM_SCHEDULE: return handleInstagramSchedule(args);
       default: return { ok: false, message: 'That action is not available.' };
     }
     if (result && result.message) toast(result.message);
@@ -1121,6 +1151,170 @@ function wireLifecycle() {
   });
   window.addEventListener('pagehide', () => { store.flush().catch(() => {}); });
 }
+// ── Instagram Business Integration (private, local-only) ─────────────────────
+async function openInstagramHub() {
+  try {
+    const { openInstagramHub: openHub } = await import('./instagram/ui.js');
+    openHub(ctx);
+    return { ok: true };
+  } catch (e) {
+    toast('Instagram section could not be opened.');
+    return { ok: false };
+  }
+}
+async function handleInstagramDisconnect() {
+  if (!window.confirm('Disconnect Instagram? Drafts remain saved locally.')) return { ok: false, cancelled: true };
+  const { buildDisconnectedConnection } = await import('./instagram/auth.js');
+  const disconnected = buildDisconnectedConnection();
+  const saved = await store.updateSettings({ instagram: disconnected });
+  if (!saved) { toast('Could not disconnect. Check storage.'); return { ok: false }; }
+  toast('Instagram disconnected.');
+  // Also clear any stored video blobs for hygiene? Keep drafts but clear tokens via revoke attempt
+  try {
+    const { revokePermissions } = await import('./instagram/auth.js');
+    // best-effort revoke; don't block UI
+    revokePermissions(store.settings.instagram.accessToken || '', store.settings.instagram.igUserId || '').catch(()=>{});
+  } catch {}
+  renderAll();
+  return { ok: true };
+}
+async function handleInstagramCheck() {
+  const conn = store.settings && store.settings.instagram;
+  if (!conn || !conn.connected) { toast('Instagram is not connected.'); return { ok: false }; }
+  toast('Checking connection…');
+  try {
+    const { validateToken } = await import('./instagram/api.js');
+    const res = await validateToken(conn.accessToken);
+    if (!res.ok) {
+      toast(res.error || 'Connection invalid — reconnect.');
+      return { ok: false, error: res.error };
+    }
+    toast('Instagram connection valid.');
+    return { ok: true };
+  } catch (e) {
+    toast('Could not check connection.');
+    return { ok: false };
+  }
+}
+async function handleInstagramDraftCreate() {
+  return openInstagramHub();
+}
+async function handleInstagramDraftPreview(kind, id) {
+  try {
+    const { openDraftEditor } = await import('./instagram/ui.js');
+    const draftId = kind === 'instagramDraft' ? id : (kind ? id : id);
+    // If called with generic args, fallback to opening hub
+    if (!draftId) return openInstagramHub();
+    openDraftEditor(ctx, draftId);
+    return { ok: true };
+  } catch { return openInstagramHub(); }
+}
+async function handleInstagramDraftDelete(kind, id) {
+  const targetKind = kind || 'instagramDraft';
+  const record = store.get(targetKind, id);
+  if (!record) { toast('Draft not found.'); return { ok: false }; }
+  const label = record.videoName || record.title || 'this draft';
+  if (!window.confirm(`Delete draft “${label}”?`)) return { ok: false, cancelled: true };
+  const removed = await store.remove(targetKind, id);
+  if (!removed) { toast('Could not delete.'); return { ok: false }; }
+  renderAll();
+  toast('Draft deleted.');
+  return { ok: true };
+}
+async function handleInstagramPublishPreview(kind, id) {
+  try {
+    const { openDraftEditor } = await import('./instagram/ui.js');
+    openDraftEditor(ctx, id);
+    return { ok: true };
+  } catch { toast('Could not open publish preview.'); return { ok: false }; }
+}
+async function handleInstagramPublish(kind, id) {
+  toast('Open the draft and use the explicit Publish confirmation. Publishing requires your final approval.');
+  return handleInstagramDraftPreview(kind, id);
+}
+async function handleInstagramSchedule(args) {
+  const draft = store.get('instagramDraft', args && args.id ? args.id : '');
+  const when = (args && args.when) || 'later';
+  if (!draft) { toast('No draft to schedule.'); return { ok: false }; }
+  // Create a reminder as local scheduled reminder (cannot auto-publish when PWA closed)
+  const now = new Date();
+  let at = new Date(now);
+  if (when === 'tomorrow') { at.setDate(at.getDate()+1); at.setHours(9,0,0,0); }
+  else if (when === 'next week') { at.setDate(at.getDate()+7); at.setHours(9,0,0,0); }
+  else { at = new Date(now.getTime() + 2*60*60*1000); }
+  const rem = Domain.createReminder(store, { title: `Publish Reel: ${draft.videoName}`, at });
+  if (!rem || rem.error) { toast('Could not set reminder.'); return { ok: false }; }
+  await store.flush();
+  renderAll();
+  toast(`Reminder set for ${at.toLocaleString()} — you will confirm publishing then. Auto-publish when PWA is closed is not supported.`);
+  return { ok: true };
+}
+async function handleInstagramCallback() {
+  try {
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const error = url.searchParams.get('error');
+    if (error) {
+      const clean = () => { try { url.searchParams.delete('code'); url.searchParams.delete('state'); url.searchParams.delete('error'); url.searchParams.delete('error_description'); window.history.replaceState({}, '', url.pathname + url.search + url.hash); } catch {} };
+      clean();
+      if (error === 'access_denied') { toast('Instagram connection cancelled.'); }
+      else toast(`Instagram connection failed: ${error}`);
+      return;
+    }
+    if (!code || !state) return;
+    // Validate state (CSRF)
+    const { validateState, clearStoredState, buildConnectedConnection, cleanCallbackUrl } = await import('./instagram/auth.js');
+    const valid = validateState(state);
+    if (!valid.ok) { toast(valid.reason || 'OAuth validation failed.'); cleanCallbackUrl(); return; }
+    // Exchange code for token
+    let exchangeResult;
+    try {
+      const { exchangeCodeForToken } = await import('./instagram/auth.js');
+      exchangeResult = await exchangeCodeForToken(code, url.origin + url.pathname.replace(/\/auth\/.*$/, '/auth/instagram/callback'));
+    } catch (e) { exchangeResult = { ok:false, error: e.message }; }
+    if (!exchangeResult.ok) {
+      toast(exchangeResult.error || 'Token exchange failed. Use manual token for testing or configure exchange service.');
+      if (exchangeResult.needsManual) {
+        openInstagramHub();
+        pushBot('Instagram authorization returned a code, but automatic exchange needs a server. Paste your long-lived token in the Instagram section under “manual token entry” to complete connection for testing.');
+      }
+      cleanCallbackUrl();
+      clearStoredState();
+      return;
+    }
+    // Discover IG account
+    const { discoverInstagramAccount, fetchInstagramProfile } = await import('./instagram/api.js');
+    const discovered = await discoverInstagramAccount(exchangeResult.accessToken);
+    if (!discovered.ok) {
+      toast(discovered.error || 'Could not find Instagram Business account. Ensure it is linked to a Page.');
+      cleanCallbackUrl();
+      return;
+    }
+    const conn = buildConnectedConnection({
+      igUserId: discovered.igUserId,
+      username: discovered.profile.username || discovered.profile.name || '',
+      name: discovered.profile.name || '',
+      profilePictureUrl: discovered.profile.profile_picture_url || '',
+      pageId: discovered.pageId,
+      accessToken: exchangeResult.accessToken,
+      tokenType: exchangeResult.tokenType,
+      expiresIn: exchangeResult.expiresIn,
+      scopes: []
+    });
+    const saved = await store.updateSettings({ instagram: conn });
+    if (!saved) toast('Connected but could not save. Check storage.');
+    else {
+      toast(`Instagram connected as @${conn.username || conn.igUserId} ✅`);
+      pushBot(`Instagram Business connected as @${conn.username || conn.igUserId}. You can now prepare Reels — select a video, add caption/hashtags, and publish after explicit approval.`);
+      renderAll();
+    }
+    cleanCallbackUrl();
+  } catch (e) {
+    try { console.error('IG callback', e); } catch {}
+  }
+}
+
 function showBriefOnce() {
   const day = todayKey();
   if (store.settings.briefDate === day) return;

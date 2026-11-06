@@ -88,5 +88,6 @@ test('service worker removes only its own old caches', async () => {
   let pending;
   handlers.activate({ waitUntil(value) { pending = Promise.resolve(value); } });
   await pending;
-  assert.deepEqual(removed, ['brain-v2.1.0', 'brain-v2.1.1']);
+  // Current CACHE is brain-v2.2.0, so older brain-v2.* should be removed, including v2.1.2
+  assert.deepEqual(removed.sort(), ['brain-v2.1.0', 'brain-v2.1.1', 'brain-v2.1.2'].sort());
 });

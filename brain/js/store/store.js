@@ -17,8 +17,29 @@ function defaultSettings() {
   return {
     name: '', currency: '₹', locale: 'en-IN', countryCode: '',
     notifEnabled: true, reducedMotion: false, onboarded: false,
-    briefDate: '', lastBackupAt: ''
+    briefDate: '', lastBackupAt: '',
+    // Instagram settings (local-only, never synced to cloud)
+    instagram: {
+      connected: false,
+      igUserId: '',
+      username: '',
+      name: '',
+      profilePictureUrl: '',
+      pageId: '',
+      accessToken: '',
+      tokenType: 'bearer',
+      expiresAt: null,
+      connectedAt: null,
+      lastValidatedAt: null,
+      scopes: []
+    }
   };
+}
+
+function cleanInstagramSettings(raw = {}) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const conn = V.makeInstagramConnection(input);
+  return conn || defaultSettings().instagram;
 }
 
 function cleanSettings(raw = {}) {
@@ -35,7 +56,8 @@ function cleanSettings(raw = {}) {
     reducedMotion: !!input.reducedMotion,
     onboarded: !!input.onboarded,
     briefDate: /^\d{4}-\d{2}-\d{2}$/.test(String(input.briefDate || '')) ? String(input.briefDate) : '',
-    lastBackupAt: (() => { const d = new Date(input.lastBackupAt); return Number.isNaN(d.getTime()) ? '' : d.toISOString(); })()
+    lastBackupAt: (() => { const d = new Date(input.lastBackupAt); return Number.isNaN(d.getTime()) ? '' : d.toISOString(); })(),
+    instagram: cleanInstagramSettings(input.instagram)
   };
 }
 

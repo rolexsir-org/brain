@@ -131,9 +131,9 @@ test('schema upgrades persist the new schema and sanitized records', async () =>
   await store.db.kvSet('photo', [{ id: 'bad-photo', dataUrl: 'not-image' }]);
   const upgraded = new Store();
   await upgraded.init();
-  assert.equal(upgraded.schema, 3);
+  assert.equal(upgraded.schema, 4);
   assert.equal(upgraded.list('photo').length, 0);
-  assert.equal((await upgraded.db.kvGet('schema')).version, 3);
+  assert.equal((await upgraded.db.kvGet('schema')).version, 4);
   assert.deepEqual(await upgraded.db.kvGet('photo'), []);
 });
 

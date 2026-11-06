@@ -3,7 +3,7 @@
 // it while running; it cannot wake itself at an arbitrary future time. There is
 // intentionally no fake background scheduler or push subscription here.
 
-const VERSION = 'brain-v2.1.2';
+const VERSION = 'brain-v2.2.0';
 const CACHE = VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
@@ -13,6 +13,7 @@ const ASSETS = [
   './js/store/db.js', './js/store/store.js', './js/store/validate.js', './js/store/migrate.js',
   './js/engine/intent.js', './js/engine/actions.js', './js/engine/context.js', './js/engine/search.js',
   './js/ui/cards.js',
+  './js/instagram/config.js', './js/instagram/auth.js', './js/instagram/api.js', './js/instagram/media.js', './js/instagram/publish.js', './js/instagram/ui.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'
 ];
 
