@@ -202,7 +202,7 @@ test('duplicate publish prevention via status', async () => {
   const { executePublish } = await import('../js/instagram/publish.js');
   const res = await executePublish(store, draft.id, store.settings.instagram);
   assert.equal(res.ok, false);
-  assert.match(res.error, /already publishing/);
+  assert.match(res.error, /already (publishing|processing)/i);
 });
 
 test('offline: local drafts remain after disconnect', async () => {

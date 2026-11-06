@@ -29,7 +29,19 @@ export const ACTION = Object.freeze({
   INSTAGRAM_DRAFT_PREVIEW: 'instagram.draft.preview',
   INSTAGRAM_PUBLISH_PREVIEW: 'instagram.publish.preview',
   INSTAGRAM_PUBLISH: 'instagram.publish',
-  INSTAGRAM_SCHEDULE: 'instagram.schedule'
+  INSTAGRAM_SCHEDULE: 'instagram.schedule',
+  INSTAGRAM_QUEUE_ADD: 'instagram.queue.add',
+  INSTAGRAM_QUEUE_CANCEL: 'instagram.queue.cancel',
+  INSTAGRAM_FAILED_RETRY: 'instagram.failed.retry',
+  INSTAGRAM_AUTOMATION_OPEN: 'instagram.automation.open',
+  INSTAGRAM_AUTOMATION_PAUSE: 'instagram.automation.pause',
+  INSTAGRAM_AUTOMATION_RESUME: 'instagram.automation.resume',
+  INSTAGRAM_INSIGHTS: 'instagram.insights',
+  COMMAND_CENTRE_OPEN: 'commandCentre.open',
+  AUTOMATION_CENTRE_OPEN: 'automation.centre.open',
+  CALENDAR_OPEN: 'calendar.open',
+  TASK_EVENT_LINK: 'taskEvent.link',
+  REMINDER_TASK_LINK: 'reminder.task.link'
 });
 
 export function makeAction(id, label, args = {}) { return { id, label, args }; }
@@ -77,6 +89,16 @@ export function canOffer(id, args = {}, { caps = {}, settings = {} } = {}) {
     case ACTION.INSTAGRAM_PUBLISH_PREVIEW: return !!(settings && settings.instagram && settings.instagram.connected);
     case ACTION.INSTAGRAM_PUBLISH: return !!(settings && settings.instagram && settings.instagram.connected);
     case ACTION.INSTAGRAM_SCHEDULE: return true;
+    case ACTION.INSTAGRAM_QUEUE_ADD: return true;
+    case ACTION.INSTAGRAM_QUEUE_CANCEL: return true;
+    case ACTION.INSTAGRAM_FAILED_RETRY: return true;
+    case ACTION.INSTAGRAM_AUTOMATION_OPEN: return true;
+    case ACTION.INSTAGRAM_AUTOMATION_PAUSE: return true;
+    case ACTION.INSTAGRAM_AUTOMATION_RESUME: return true;
+    case ACTION.INSTAGRAM_INSIGHTS: return !!(settings && settings.instagram && settings.instagram.connected);
+    case ACTION.COMMAND_CENTRE_OPEN: return true;
+    case ACTION.AUTOMATION_CENTRE_OPEN: return true;
+    case ACTION.CALENDAR_OPEN: return true;
     default: return true;
   }
 }
@@ -183,12 +205,18 @@ export function availableActions(kind, record, context = {}) {
       push(makeAction(ACTION.RECORD_DELETE, 'Delete', { kind, id: record.id }));
       break;
     case 'instagramDraft': {
-      const isPublished = record.status === 'published';
+      const isPublished = String(record.status).toUpperCase() === 'PUBLISHED';
+      const isFailed = String(record.status).toUpperCase() === 'FAILED';
+      const isCancelled = String(record.status).toUpperCase() === 'CANCELLED';
+      const isQueued = ['SCHEDULED','AWAITING_APPROVAL','READY'].includes(String(record.status).toUpperCase());
       const igConnected = !!(c.settings && c.settings.instagram && c.settings.instagram.connected);
       push(makeAction(ACTION.INSTAGRAM_DRAFT_PREVIEW, 'Edit', { kind, id: record.id }));
       if (!isPublished) {
         push(makeAction(ACTION.INSTAGRAM_DRAFT_DELETE, 'Delete', { kind, id: record.id }));
         if (igConnected) push(add(ACTION.INSTAGRAM_PUBLISH_PREVIEW, 'Publish…', { kind, id: record.id }));
+        if (isFailed) push(makeAction(ACTION.INSTAGRAM_FAILED_RETRY, 'Retry', { kind, id: record.id }));
+        if (isQueued) push(makeAction(ACTION.INSTAGRAM_QUEUE_CANCEL, 'Cancel', { kind, id: record.id }));
+        else if (!isCancelled) push(makeAction(ACTION.INSTAGRAM_QUEUE_ADD, 'Queue', { kind, id: record.id }));
       }
       if (record.permalink) push(add(ACTION.OPEN, 'View on Instagram', { url: record.permalink }));
       break;

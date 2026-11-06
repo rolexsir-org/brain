@@ -1,9 +1,9 @@
 // Central constants. Kept intentionally small.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const DB_NAME = 'brain';
 export const DB_VERSION = 1;
 export const APP_NAME = 'Brain';
-export const VERSION = '2.2.0';
+export const VERSION = '2.3.0';
 
 export const CURRENCIES = ['₹', '$', '€', '£', 'AED', '₽', '¥', 'Rs '];
 export const LOCALES = ['en-IN', 'en-US', 'en-GB', 'hi-IN', 'en-AU', 'es-ES', 'fr-FR', 'ar-SA'];
@@ -46,7 +46,9 @@ export const INSTAGRAM_MEDIA_REQUIREMENTS = Object.freeze({
   hashtagMaxCount: 30,
   hashtagMaxLength: 80
 });
-export const INSTAGRAM_PUBLISH_STATES = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
+export const INSTAGRAM_PUBLISH_STATES = ['DRAFT', 'READY', 'AWAITING_APPROVAL', 'SCHEDULED', 'UPLOADING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'CANCELLED'];
+// legacy mapping kept for migration
+export const INSTAGRAM_PUBLISH_STATES_LEGACY = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
 
 // Action verbs grouped for consistency (used by parser + quick actions).
 export const TASK_INTENTS = [

@@ -75,6 +75,32 @@ async function boot() {
   registerSw().then(registration => { swRegistration = registration || null; }).catch(() => {});
   bootVoice();
   store.onPersistenceError(() => toast('Brain could not save the latest change. Check device storage, then try again.'));
+  // Durable state recovery — interrupted publishes
+  try {
+    const { recoverInterruptedPublishes } = await import('./instagram/publish.js');
+    await recoverInterruptedPublishes(store);
+  } catch {}
+  // Periodic queue processor (attempt to process due items; requires token)
+  setInterval(async ()=>{
+    try {
+      const { processQueue } = await import('./instagram/queue.js');
+      const conn = store.settings?.instagram;
+      if (!conn || !conn.connected) return;
+      await processQueue(store, conn, { onPublish: async (draft, connection)=> {
+        const { executePublish } = await import('./instagram/publish.js');
+        return executePublish(store, draft.id, connection, { actor:'automation' });
+      }});
+    } catch {}
+  }, 30000);
+  // Immediate attempt for overdue queue
+  try {
+    const { processQueue } = await import('./instagram/queue.js');
+    const conn = store.settings?.instagram;
+    if (conn && conn.connected) await processQueue(store, conn, { onPublish: async (draft, connection)=> {
+      const { executePublish } = await import('./instagram/publish.js');
+      return executePublish(store, draft.id, connection, { actor:'automation' });
+    }});
+  } catch {}
 
   setTitle();
   await handleNotificationLaunch();
@@ -384,6 +410,17 @@ function openMenu() {
     ['event', 'Events'], ['money', 'Money'], ['debt', 'Debts'], ['stockItem', 'Stock'], ['habit', 'Habits'], ['journal', 'Journal'],
     ['instagramDraft', 'Instagram Reels'], ['instagramPublication', 'Published Reels']
   ];
+  // Command & automation centres prominent
+  body.append(E.div({ class: 'hr' }));
+  const ccRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#0ea5e9;color:#fff' }, '🗂️'), E.div({ class: 'tx' }, E.b({}, 'Command Centre'), E.small({}, 'Search everything · pending actions · content calendar')));
+  ccRow.addEventListener('click', async ()=>{ closeSheet(); const mod=await import('./ui/commandCentre.js'); mod.openCommandCentre(ctx); });
+  const acRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#7c3aed;color:#fff' }, '🤖'), E.div({ class: 'tx' }, E.b({}, 'Automation Centre'), E.small({}, 'Permissions · automations · approvals · failures')));
+  acRow.addEventListener('click', async ()=>{ closeSheet(); const mod=await import('./ui/automationCentre.js'); mod.openAutomationCentre(ctx); });
+  body.append(ccRow, acRow);
+  // Storage diagnostics quick link
+  const sdRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, '💾'), E.div({ class: 'tx' }, E.b({}, 'Storage & media health'), E.small({}, 'Check storage use and media integrity')));
+  sdRow.addEventListener('click', async ()=>{ closeSheet(); const rep=await store.storageReport(); pushBot(`Storage: ${rep.jsonChars} chars JSON, ${rep.photoChars} chars photos. Usage quota: ${rep.estimate? `${Math.round((rep.estimate.usage||0)/1024)}KB/${Math.round((rep.estimate.quota||0)/1024)}KB`: 'unknown'}. Media integrity: ${JSON.stringify(rep.mediaIntegrity)}`, []); });
+  body.append(sdRow);
   for (const [kind, label] of sections) {
     const row = E.button({ class: 'srow', type: 'button' },
       E.div({ class: 'em', 'aria-hidden': 'true' }, kindIcon(kind)),
@@ -550,6 +587,22 @@ function openDiagnostics() {
 // ---------- Backup, restore, sample data ----------
 async function doExport() {
   try {
+    const encrypt = window.confirm('Encrypt this backup with a password? (OK = encrypted, Cancel = plain JSON)');
+    let blobText, filename;
+    if (encrypt) {
+      const pwd = window.prompt('Enter password for encrypted backup (remember it!):');
+      if (!pwd) { toast('Encryption cancelled — plain backup will be created.'); }
+      else {
+        const res = await store.exportStateEncrypted(pwd);
+        blobText = res.blobText;
+        filename = `brain-backup-${todayKey()}.enc`;
+        const blob = new Blob([blobText], { type: 'text/plain' });
+        const result = await Ext.saveBlob(blob, filename, { types: [{ description: 'Brain backup', accept: { 'application/json': ['.json'] } }] });
+        if (result.ok) { await store.updateSettings({ lastBackupAt: new Date().toISOString() }); toast(result.method==='picker'?'Encrypted backup saved.':'Encrypted backup downloaded — keep it safe.'); }
+        else if (!result.cancelled) toast(result.message||'Could not save backup.');
+        return;
+      }
+    }
     const snapshot = await store.exportState();
     const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
     const result = await Ext.saveBlob(blob, `brain-backup-${todayKey()}.json`, {
@@ -590,7 +643,16 @@ async function handleImport(input) {
   if (!file) return;
   if (file.size > BACKUP_MAX_BYTES) { toast('That backup is too large (maximum 25 MB).'); return; }
   try {
-    const raw = await textFromFile(file);
+    let raw = await textFromFile(file);
+    // Encrypted backup handling
+    if (raw.startsWith('brain-enc-v1.')) {
+      const pwd = window.prompt('This backup is encrypted. Enter password:');
+      if (!pwd) { toast('Restore cancelled — password required.'); return; }
+      try {
+        const { decryptBackup } = await import('./util/crypto.js');
+        raw = await decryptBackup(raw, pwd);
+      } catch (e) { toast('Could not decrypt — wrong password or corrupt file.'); return; }
+    }
     const info = previewImport(raw);
     showRestoreOptions(raw, info);
   } catch (error) {
@@ -739,6 +801,16 @@ async function runAction(action) {
       case ACTION.INSTAGRAM_PUBLISH_PREVIEW: return handleInstagramPublishPreview(args.kind, args.id);
       case ACTION.INSTAGRAM_PUBLISH: return handleInstagramPublish(args.kind, args.id);
       case ACTION.INSTAGRAM_SCHEDULE: return handleInstagramSchedule(args);
+      case ACTION.INSTAGRAM_QUEUE_ADD: return handleInstagramQueueAdd(args);
+      case ACTION.INSTAGRAM_QUEUE_CANCEL: return handleInstagramQueueCancel(args);
+      case ACTION.INSTAGRAM_FAILED_RETRY: return handleInstagramFailedRetry(args);
+      case ACTION.INSTAGRAM_AUTOMATION_OPEN: return handleInstagramAutomationOpen();
+      case ACTION.INSTAGRAM_AUTOMATION_PAUSE: return handleInstagramAutomationPause();
+      case ACTION.INSTAGRAM_AUTOMATION_RESUME: return handleInstagramAutomationResume();
+      case ACTION.INSTAGRAM_INSIGHTS: return handleInstagramInsights();
+      case ACTION.COMMAND_CENTRE_OPEN: return handleCommandCentreOpen();
+      case ACTION.AUTOMATION_CENTRE_OPEN: return handleAutomationCentreOpen();
+      case ACTION.CALENDAR_OPEN: return handleCalendarOpen();
       default: return { ok: false, message: 'That action is not available.' };
     }
     if (result && result.message) toast(result.message);
@@ -1313,6 +1385,84 @@ async function handleInstagramCallback() {
   } catch (e) {
     try { console.error('IG callback', e); } catch {}
   }
+}
+
+async function handleInstagramQueueAdd(args){
+  const id=args && args.id ? args.id : '';
+  if(!id){ toast('No draft to queue.'); return {ok:false}; }
+  const { enqueue }=await import('./instagram/queue.js');
+  const res=await enqueue(store, id, { scheduledAt: new Date().toISOString() });
+  if(!res.ok){ toast(res.error); return res; }
+  toast('Queued for publishing.');
+  return res;
+}
+async function handleInstagramQueueCancel(args){
+  const id=args && args.id ? args.id : '';
+  if(!id){ toast('No draft to cancel.'); return {ok:false}; }
+  const { cancelQueueForDraft }=await import('./instagram/queue.js');
+  const res=await cancelQueueForDraft(store, id);
+  if(!res.ok){ toast(res.error); return res; }
+  toast('Queue cancelled.');
+  renderAll();
+  return res;
+}
+async function handleInstagramFailedRetry(args){
+  const id=args && args.id ? args.id : '';
+  const draft=store.get('instagramDraft', id);
+  if(!draft){ toast('Draft not found.'); return {ok:false}; }
+  // check container expiry before retry
+  await store.update('instagramDraft', id, { status:'READY', lastError:'' });
+  toast('Draft set to Ready — review and publish again when ready.');
+  const { openDraftEditor } = await import('./instagram/ui.js');
+  openDraftEditor(ctx, id);
+  return {ok:true};
+}
+async function handleInstagramAutomationOpen(){
+  const mod=await import('./ui/automationCentre.js');
+  mod.openAutomationCentre(ctx);
+  return {ok:true};
+}
+async function handleInstagramAutomationPause(){
+  const { pauseAutomation }=await import('./instagram/automation.js');
+  const automation=store.settings.instagram.automation;
+  const updated=pauseAutomation(automation||{enabled:false,paused:false,mode:'MANUAL',rules:[],history:[]});
+  await store.updateSettings({ instagram:{...store.settings.instagram, automation: updated}});
+  toast('Automation paused — manual approval now required.');
+  return {ok:true};
+}
+async function handleInstagramAutomationResume(){
+  const { resumeAutomation }=await import('./instagram/automation.js');
+  const automation=store.settings.instagram.automation;
+  const updated=resumeAutomation(automation||{enabled:false,paused:false,mode:'MANUAL',rules:[],history:[]});
+  await store.updateSettings({ instagram:{...store.settings.instagram, automation: updated}});
+  toast('Automation resumed.');
+  return {ok:true};
+}
+async function handleInstagramInsights(){
+  const { localInsights, fetchInsights, formatInsightsReport }= await import('./instagram/insights.js');
+  const li=localInsights(store);
+  pushBot(formatInsightsReport(li));
+  if(store.settings.instagram?.connected){
+    const conn=store.settings.instagram;
+    const remote=await fetchInsights(conn.igUserId, conn.accessToken);
+    if(remote.ok) pushBot(formatInsightsReport(remote));
+  }
+  return {ok:true};
+}
+async function handleCommandCentreOpen(){
+  const mod=await import('./ui/commandCentre.js');
+  mod.openCommandCentre(ctx);
+  return {ok:true};
+}
+async function handleAutomationCentreOpen(){
+  const mod=await import('./ui/automationCentre.js');
+  mod.openAutomationCentre(ctx);
+  return {ok:true};
+}
+async function handleCalendarOpen(){
+  const mod=await import('./ui/commandCentre.js');
+  mod.openCommandCentre(ctx);
+  return {ok:true};
 }
 
 function showBriefOnce() {

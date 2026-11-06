@@ -7,7 +7,7 @@ export function searchAll(q, store) {
   const needle = normStr(q);
   if (!needle) return [];
   const out = [];
-  for (const col of ['task', 'reminder', 'note', 'person', 'money', 'debt', 'stockItem', 'habit', 'journal', 'event']) {
+  for (const col of ['task', 'reminder', 'note', 'person', 'money', 'debt', 'stockItem', 'habit', 'journal', 'event', 'photo', 'instagramDraft', 'instagramPublication']) {
     const hits = [];
     for (const r of store.list(col)) {
       const s = relevance(col, r, needle, q);
@@ -33,6 +33,9 @@ function relevance(col, r, needle, rawQ) {
     case 'habit': hay = r.name; break;
     case 'journal': hay = r.text + ' ' + r.mood; break;
     case 'event': hay = r.title + ' ' + (r.kind || ''); break;
+    case 'photo': hay = r.name; break;
+    case 'instagramDraft': hay = r.videoName + ' ' + r.caption + ' ' + (r.hashtags||[]).join(' '); break;
+    case 'instagramPublication': hay = r.videoName + ' ' + r.caption + ' ' + (r.hashtags||[]).join(' '); break;
   }
   let s = score(needle, normStr(hay));
   // give extra weight to name/title matches

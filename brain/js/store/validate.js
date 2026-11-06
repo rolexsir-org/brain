@@ -246,15 +246,42 @@ export function cleanHashtags(value) {
   return out;
 }
 
+function normalizeInstagramStatus(rawStatus) {
+  const legacy = { 'draft':'DRAFT','ready':'READY','pending':'AWAITING_APPROVAL','publishing':'PROCESSING','published':'PUBLISHED','failed':'FAILED','scheduled':'SCHEDULED' };
+  const s = String(rawStatus||'').trim();
+  if (!s) return 'DRAFT';
+  const up = s.toUpperCase();
+  if (['DRAFT','READY','AWAITING_APPROVAL','SCHEDULED','UPLOADING','PROCESSING','PUBLISHED','FAILED','CANCELLED'].includes(up)) return up;
+  const lo = s.toLowerCase();
+  if (legacy[lo]) return legacy[lo];
+  return 'DRAFT';
+}
+
 export function makeInstagramDraft(raw = {}) {
-  const allowedStatus = ['draft', 'ready', 'pending', 'publishing', 'published', 'failed', 'scheduled'];
-  const status = allowedStatus.includes(raw.status) ? raw.status : 'draft';
+  const status = normalizeInstagramStatus(raw.status || 'DRAFT');
   const caption = cleanCaption(raw.caption || '');
   const hashtags = cleanHashtags(raw.hashtags || []);
-  // Video metadata - validated, but original video stays as separate blob
   const videoName = cleanText(raw.videoName || '', 260).trim() || 'reel.mp4';
   const videoMime = cleanText(raw.videoMime || 'video/mp4', 80).trim().toLowerCase();
   const safeMime = ['video/mp4', 'video/quicktime', 'video/mov', 'video/x-m4v'].includes(videoMime) ? videoMime : 'video/mp4';
+  // normalize aliases: video_url / videoUrl -> tempVideoUrl
+  let tempVideoUrl = null;
+  const rawUrl = raw.tempVideoUrl || raw.videoUrl || raw.video_url || raw.temp_video_url || null;
+  if (typeof rawUrl === 'string' && rawUrl.trim()) tempVideoUrl = rawUrl.trim().slice(0,2000);
+  // cover selection
+  const coverDataUrl = isSafeImageDataUrl(raw.coverDataUrl || raw.cover_data_url) ? String(raw.coverDataUrl || raw.cover_data_url) : (typeof raw.coverUrl === 'string' && raw.coverUrl.startsWith('data:') ? '' : cleanText(raw.coverUrl || '', 2000).trim().slice(0,2000) || null);
+  const coverUrl = coverDataUrl && coverDataUrl.startsWith('data:') ? null : (cleanText(raw.coverUrl || '', 2000).trim().slice(0,2000) || null);
+  // history array for durable publish tracking
+  let history = [];
+  if (Array.isArray(raw.history)) history = raw.history.slice(0,100).map(h=> ({
+    at: cleanDateIso(h.at) || nowISO(),
+    action: cleanText(h.action, 40) || 'update',
+    fromStatus: normalizeInstagramStatus(h.fromStatus || ''),
+    details: cleanText(h.details || '', 500),
+    actor: cleanText(h.actor || 'user', 20) || 'user',
+    containerId: typeof h.containerId === 'string' ? h.containerId.slice(0,128) : null,
+    mediaId: typeof h.mediaId === 'string' ? h.mediaId.slice(0,128) : null
+  }));
   return {
     ...base(raw),
     type: 'instagramDraft',
@@ -266,7 +293,9 @@ export function makeInstagramDraft(raw = {}) {
     videoDuration: finiteNumber(raw.videoDuration, 0, { min: 0, max: 10000 }),
     caption,
     hashtags,
-    coverUrl: cleanText(raw.coverUrl || '', 2000).trim().slice(0, 2000),
+    coverUrl,
+    coverDataUrl,
+    coverTimeSec: finiteNumber(raw.coverTimeSec, 0, { min: 0, max: 10000 }),
     status,
     scheduledAt: cleanDateIso(raw.scheduledAt),
     publishedAt: cleanDateIso(raw.publishedAt),
@@ -275,7 +304,10 @@ export function makeInstagramDraft(raw = {}) {
     permalink: typeof raw.permalink === 'string' ? raw.permalink.slice(0, 500) : null,
     lastError: cleanText(raw.lastError || '', 1000),
     retryCount: finiteNumber(raw.retryCount, 0, { min: 0, max: 20 }),
-    tempVideoUrl: typeof raw.tempVideoUrl === 'string' ? raw.tempVideoUrl.slice(0, 2000) : null,
+    tempVideoUrl,
+    // compatibility shim
+    videoUrl: tempVideoUrl,
+    history,
     deletedAt: null
   };
 }
@@ -292,7 +324,7 @@ export function makeInstagramPublication(raw = {}) {
     hashtags: cleanHashtags(raw.hashtags || []),
     videoName: cleanText(raw.videoName || '', 260),
     publishedAt: cleanDateIso(raw.publishedAt) || nowISO(),
-    status: ['published', 'failed'].includes(raw.status) ? raw.status : 'published',
+    status: normalizeInstagramStatus(raw.status) === 'FAILED' ? 'FAILED' : 'PUBLISHED',
     lastError: cleanText(raw.lastError || '', 1000),
     deletedAt: null
   };

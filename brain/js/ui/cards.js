@@ -138,7 +138,8 @@ export function entityCard(ctx, kind, id) {
       if (record.notes) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.notes));
       break;
     case 'instagramDraft': {
-      const statusEmoji = { draft: '⚪', ready: '🟢', pending: '🟡', publishing: '⏳', published: '✅', failed: '❌', scheduled: '📅' }[record.status] || '⚪';
+      const su = String(record.status||'DRAFT').toUpperCase();
+      const statusEmoji = { DRAFT: '⚪', READY: '🟢', AWAITING_APPROVAL: '🟡', SCHEDULED: '📅', UPLOADING: '⏳', PROCESSING: '⏳', PUBLISHED: '✅', FAILED: '❌', CANCELLED: '🚫' }[su] || '⚪';
       card.append(E.div({ class: 't' }, `${statusEmoji} ${record.videoName || 'Reel draft'}`));
       meta.append(E.div({}, `${record.videoWidth || '?'}×${record.videoHeight || '?'} · ${record.videoDuration ? Math.round(record.videoDuration) + 's' : '—'} · ${(record.videoSize / 1048576).toFixed(1)} MB`));
       if (record.caption) meta.append(E.div({ style: 'white-space:pre-wrap' }, record.caption));
