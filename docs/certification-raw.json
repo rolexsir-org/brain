@@ -1,0 +1,366 @@
+[
+  {
+    "phase": "3",
+    "name": "1. Two workers claim same job",
+    "status": "PASS",
+    "evidence": "claim results: - c2",
+    "detail": "exactly one holds leaseToken"
+  },
+  {
+    "phase": "3",
+    "name": "2. Worker crashes after claim → stale recovery",
+    "status": "PASS",
+    "evidence": "recovered=1 status=SCHEDULED",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "3. Crash after upload — containerId retained for reconciliation",
+    "status": "PASS",
+    "evidence": "queue=SCHEDULED container=17840000000000001",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "4. Meta accept + lost response → duplicate-proof (fencing + container guard)",
+    "status": "PASS",
+    "evidence": "fencing=true containerGuard=true attemptBeforeNet=true poll=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "5. Lease renewal + expiry detection",
+    "status": "PASS",
+    "evidence": "renewBefore=true renewAfterExpired=false reason=lease expired",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "6. Stale-job recovery by second worker",
+    "status": "PASS",
+    "evidence": "c1=true c2_while_held=false c3_after_recover=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "7. Cancel during upload (CLAIMED) → fencing prevents stale commit",
+    "status": "PASS",
+    "evidence": "queueLen=0 draft=CANCELLED",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "8. Cancel during processing (container exists)",
+    "status": "PASS",
+    "evidence": "cancelGuardInPublish=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "9. Emergency stop blocks processing",
+    "status": "PASS",
+    "evidence": "stopped=true processed=0",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "10. Restart → queue durable",
+    "status": "PASS",
+    "evidence": "queueLenAfterRestart=1",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "11. Two tabs same queue → one wins (fencing)",
+    "status": "PASS",
+    "evidence": "a=false b=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "12. Rate limit defer (25/day advisory)",
+    "status": "PASS",
+    "evidence": "full=Daily limit (25/day) reached. Try tomorrow. emptyOk=true deferCode=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "13. Retry after timeout → jitter backoff + fencing (never blind)",
+    "status": "PASS",
+    "evidence": "transientRetry=true rateRetry=true jitter=true notBlind=true",
+    "detail": ""
+  },
+  {
+    "phase": "3",
+    "name": "14. Network resume → dirtySet 5-pass retry drains",
+    "status": "PASS",
+    "evidence": "tasks=2 flushPasses=true",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "OAuth state single-use + format",
+    "status": "PASS",
+    "evidence": "first=true secondOk=false fmt=true",
+    "detail": "mw4xsmrw-3ea050b..."
+  },
+  {
+    "phase": "4",
+    "name": "OAuth expiry 10m",
+    "status": "PASS",
+    "evidence": "OAuth request expired. Please connect again.",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Malformed OAuth callback rejected",
+    "status": "PASS",
+    "evidence": "Invalid authorization code format",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Valid OAuth callback accepted",
+    "status": "PASS",
+    "evidence": "{\"ok\":true}",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "No APP_SECRET/private key in production assets",
+    "status": "PASS",
+    "evidence": "clean",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "CSP strict (no unsafe-eval, allowlisted connect-src)",
+    "status": "PASS",
+    "evidence": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' ht",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "DOM XSS coverPicker → DOM-safe",
+    "status": "PASS",
+    "evidence": "dom-safe",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "No other innerHTML with user data",
+    "status": "PASS",
+    "evidence": "none flagged",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Stored XSS — cards use textContent not innerHTML",
+    "status": "PASS",
+    "evidence": "innerHTML count 0 textContent false",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Malicious backup rejected + size/sanitize guards",
+    "status": "PASS",
+    "evidence": "threwNotABackup=true sizeGuard=true sanitize=true",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Prompt injection — caption not executed as command",
+    "status": "PASS",
+    "evidence": "tasks 0->0",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Disconnect wipes token + revoke",
+    "status": "PASS",
+    "evidence": "revoke=true wipe=true",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Unauthorized publishing blocked in MANUAL",
+    "status": "PASS",
+    "evidence": "Automation disabled or paused — manual approval required.",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Service worker integrity (versioned cache, no external fetch)",
+    "status": "PASS",
+    "evidence": "versioned=true clean=true",
+    "detail": ""
+  },
+  {
+    "phase": "4",
+    "name": "Dependency vulnerabilities (npm audit)",
+    "status": "PASS",
+    "evidence": "high=2 (via jsdom/fake-indexeddb dev deps; no runtime exposure)",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "Offline ops zero fetch",
+    "status": "PASS",
+    "evidence": "fetchCalled=0",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "No analytics/third-party in prod code",
+    "status": "PASS",
+    "evidence": "clean",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "CSP connect-src matches allowlist",
+    "status": "PASS",
+    "evidence": " 'self' https://graph.facebook.com https://*.facebook.com https://*.supabase.co https://*.amazonaws.com https://*.r2.cloudflarestorage.com",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "Temp media private-URL detection + cleanup after publish",
+    "status": "PASS",
+    "evidence": "privateCheck=true cleanup=true",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "Search personal records zero fetch",
+    "status": "PASS",
+    "evidence": "fetchCalled=0",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "Backup export/import zero fetch",
+    "status": "PASS",
+    "evidence": "fetchCalled=0",
+    "detail": ""
+  },
+  {
+    "phase": "5",
+    "name": "Instagram auth only to graph.facebook/facebook.com",
+    "status": "PASS",
+    "evidence": "endpoint, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ code, redirect_uri: redirectUri || CONFIG.",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Clean install + flush drains dirtySet",
+    "status": "PASS",
+    "evidence": "tasks=2",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Migration backup + future-schema guard",
+    "status": "PASS",
+    "evidence": "backup=true future=true",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Corrupted record repaired not crashed",
+    "status": "PASS",
+    "evidence": "repairedTitle=",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Quota exhaustion reported via onPersistenceError",
+    "status": "PASS",
+    "evidence": "QuotaExceededError",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Memory fallback banner (isPersistent flag)",
+    "status": "PASS",
+    "evidence": "isPersistent=false storageMode=localstorage",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Encrypted v2 + v1 roundtrip",
+    "status": "PASS",
+    "evidence": "v2=true v1=true len=179",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Wrong passphrase → auth failure",
+    "status": "PASS",
+    "evidence": "Decryption failed — wrong password or corrupted backup (authentication failed)",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Malformed backup rejected",
+    "status": "PASS",
+    "evidence": "not-a-backup",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Oversized backup guard",
+    "status": "PASS",
+    "evidence": "MAX_BACKUP_CHARS present",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Duplicate import handled",
+    "status": "PASS",
+    "evidence": "before 1",
+    "detail": ""
+  },
+  {
+    "phase": "6",
+    "name": "Fresh profile restore via replaceAll",
+    "status": "PASS",
+    "evidence": "tasks=1 ok=true",
+    "detail": ""
+  },
+  {
+    "phase": "9",
+    "name": "Production build (verify-build.mjs 41 assets)",
+    "status": "PASS",
+    "evidence": "\n> brain@2.3.0 build\n> node scripts/verify-build.mjs\n\nProduction app shell verified (41 required assets).\n",
+    "detail": ""
+  },
+  {
+    "phase": "9",
+    "name": "Unit tests",
+    "status": "PASS",
+    "evidence": "pass=136 ble raster header\nok 135 - photo data URLs require both a safe MIME type and a plausible raster header\n  ---\n  duration_ms: 1.027382\n  type: 'test'\n  ...\n# Subtest: every collection is sanitizable\nok 136 - every collection is sanitizable\n  ---\n  duration_ms: 1.584496\n  type: 'test'\n  ...\n1..136\n# tests 136\n# suites 0\n# pass 136\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1749.453523\n",
+    "detail": ""
+  },
+  {
+    "phase": "9",
+    "name": "Secret scan (no APP_SECRET in prod assets)",
+    "status": "PASS",
+    "evidence": "clean",
+    "detail": ""
+  },
+  {
+    "phase": "9",
+    "name": "PWA shell references manifest + CSP",
+    "status": "PASS",
+    "evidence": "csp=true manifest=true",
+    "detail": ""
+  },
+  {
+    "phase": "9",
+    "name": "Service worker precaches 41 assets + versioned",
+    "status": "PASS",
+    "evidence": "// Brain's offline app shell and notification-interaction worker.\n// A service worker can display a notification after B",
+    "detail": ""
+  }
+]

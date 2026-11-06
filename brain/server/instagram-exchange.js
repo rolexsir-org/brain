@@ -9,7 +9,8 @@
 //
 // See docs/instagram-setup.md for deployment.
 
-const GRAPH = 'https://graph.facebook.com/v21.0';
+const GRAPH_VERSION = 'v26.0'; // keep in sync with constants INSTAGRAM_API_VERSION
+const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 function corsHeaders(origin, allowed) {
   const list = (allowed || '').split(',').map(s=>s.trim()).filter(Boolean);
