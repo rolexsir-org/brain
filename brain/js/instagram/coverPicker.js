@@ -55,14 +55,29 @@ export function coverPickerUI(draft, onSelect) {
   // initialize slider max to duration if known
   if (draft.durationSec) { slider.max = String(Math.max(1, Math.floor(draft.durationSec))); slider.value = String(Math.min(currentTime, Number(slider.max))); }
 
+  function setPreviewLoading(){
+    preview.textContent='';
+    const span=document.createElement('span');
+    span.className='muted';
+    span.textContent='Extracting frame…';
+    preview.append(span);
+  }
+  function setPreviewImage(dataUrl, alt){
+    preview.textContent='';
+    const img=document.createElement('img');
+    img.src=dataUrl;
+    img.alt=alt;
+    img.style.cssText='max-width:200px;max-height:360px;object-fit:contain;border-radius:6px;';
+    preview.append(img);
+  }
   wrap.querySelector('[data-action="cover-preview"]').addEventListener('click', async () => {
     if (!draft.videoUrl) { preview.textContent='No video URL — set video first'; return; }
-    preview.innerHTML='<span class="muted">Extracting frame…</span>';
+    setPreviewLoading();
     try {
       const t = Number(slider.value) || 1;
       const res = await extractCoverFrame(draft.videoUrl, t);
       currentDataUrl = res.dataUrl; currentTime = res.timeSec;
-      preview.innerHTML = `<img src="${res.dataUrl}" alt="Cover preview" style="max-width:200px;max-height:360px;object-fit:contain;border-radius:6px;">`;
+      setPreviewImage(res.dataUrl, 'Cover preview');
     } catch (e) { preview.textContent = e.message; }
   });
   wrap.querySelector('[data-action="cover-save"]').addEventListener('click', () => {
@@ -70,7 +85,7 @@ export function coverPickerUI(draft, onSelect) {
     onSelect({ coverDataUrl: currentDataUrl, coverTimeSec: currentTime });
   });
   if (currentDataUrl) {
-    preview.innerHTML = `<img src="${currentDataUrl}" alt="Current cover" style="max-width:200px;max-height:360px;object-fit:contain;border-radius:6px;">`;
+    setPreviewImage(currentDataUrl, 'Current cover');
   }
   return wrap;
 }

@@ -43,7 +43,7 @@ export const CONFIG = Object.freeze({
       if (typeof localStorage !== 'undefined') { const s=localStorage.getItem('brain:graph:version'); if(s) return String(s).trim(); }
       if (typeof window!=='undefined' && window.BRAIN_GRAPH_VERSION) return String(window.BRAIN_GRAPH_VERSION).trim();
     } catch {}
-    return 'v21.0';
+    return 'v26.0';
   },
   get graphBase() { return `https://graph.facebook.com/${this.apiVersion}`; },
   get oauthDialog() { return `https://www.facebook.com/${this.apiVersion}/dialog/oauth`; },

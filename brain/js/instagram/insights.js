@@ -1,10 +1,11 @@
 // Account insights — local + Graph API when available.
 // Fallback to local publishing stats when insights scope not granted.
+import { CONFIG } from './config.js';
 
 export async function fetchInsights(igUserId, accessToken, metrics = ['impressions','reach','profile_views']) {
   if (!igUserId || !accessToken) return { ok:false, error:'Not connected' };
   try {
-    const url = new URL(`https://graph.facebook.com/v21.0/${igUserId}/insights`);
+    const url = new URL(`${CONFIG.graphBase}/${igUserId}/insights`);
     url.searchParams.set('metric', metrics.join(','));
     url.searchParams.set('period', 'day');
     url.searchParams.set('access_token', accessToken);

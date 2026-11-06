@@ -116,23 +116,43 @@ export async function getPendingQueue(store) {
   }).sort((a,b)=> new Date(a.scheduledAt)-new Date(b.scheduledAt));
 }
 
-// Atomic job claiming: CLAIMED prevents concurrent workers
+// Fencing token + renewable lease: prevents stale worker from committing
+function generateFencingToken(){ try { const b=new Uint8Array(16); crypto.getRandomValues(b); return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''); } catch { return Math.random().toString(36).slice(2)+Date.now().toString(36); } }
+
+// Atomic job claiming: CLAIMED prevents concurrent workers; returns {entry, leaseToken}
 export async function claimJob(store, entryId) {
   const queue = await getQueue(store);
   const idx = queue.findIndex(q=> q.id===entryId);
   if (idx===-1) return null;
   const entry = queue[idx];
   if (entry.status !== STATES.SCHEDULED) return null; // already claimed/processing
-  // Lock
+  // Lock with fencing token and lease
+  const leaseToken = generateFencingToken();
+  const leaseExpiry = new Date(Date.now()+ 5*60*1000).toISOString(); // 5 min lease
   entry.status = 'CLAIMED';
   entry.claimedAt = nowISO();
+  entry.leaseToken = leaseToken;
+  entry.leaseExpiry = leaseExpiry;
   entry.updatedAt = nowISO();
   await saveQueue(store, queue);
-  // Verify we still hold the claim
+  // Verify we still hold the claim with our token
   const verify = await getQueue(store);
   const held = verify.find(q=> q.id===entryId);
-  if (!held || held.status !== 'CLAIMED') return null; // race lost
-  return entry;
+  if (!held || held.status !== 'CLAIMED' || held.leaseToken !== leaseToken) return null; // race lost
+  return { entry: held, leaseToken };
+}
+
+export async function renewLease(store, entryId, leaseToken) {
+  const queue = await getQueue(store);
+  const idx = queue.findIndex(q=> q.id===entryId);
+  if (idx===-1) return { ok:false, error:'not found' };
+  const entry = queue[idx];
+  if (entry.leaseToken !== leaseToken) return { ok:false, error:'fencing token mismatch — job claimed by another worker' };
+  if (new Date(entry.leaseExpiry).getTime() < Date.now()) return { ok:false, error:'lease expired' };
+  entry.leaseExpiry = new Date(Date.now()+ 5*60*1000).toISOString();
+  entry.updatedAt = nowISO();
+  await saveQueue(store, queue);
+  return { ok:true, entry };
 }
 
 export function classifyRetry(errorMsg) {
@@ -196,13 +216,14 @@ export async function processQueue(store, connection, { onPublish } = {}) {
       const cnt = perRuleCounts[entry.ruleId] || 0;
       if (cnt >= maxPerDay) continue;
     }
-    // Atomic claim
-    const claimed = await claimJob(store, entry.id);
-    if (!claimed) continue; // lost race
-    // Check cancellation after claim (race protection)
+    // Atomic claim with fencing token
+    const claimRes = await claimJob(store, entry.id);
+    if (!claimRes) continue; // lost race
+    const { entry: claimedEntry, leaseToken } = claimRes;
+    // Check cancellation after claim (race protection) — verify fencing token
     const freshQ = await getQueue(store);
     const still = freshQ.find(q=> q.id===entry.id);
-    if (!still || still.status !== 'CLAIMED') continue;
+    if (!still || still.status !== 'CLAIMED' || still.leaseToken !== leaseToken) continue;
     if (still.cancelled) { await dequeue(store, entry.id); continue; }
 
     const draft = store.get('instagramDraft', entry.draftId);
