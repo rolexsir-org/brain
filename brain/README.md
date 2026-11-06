@@ -1,334 +1,255 @@
-# 🧠 Brain
+# 🧠 Brain — Private, Offline-First Personal Assistant
 
-**Brain is a private, offline-first personal assistant PWA.** It keeps your
-personal information in the browser on the device you are using: there is no
-Brain account, cloud sync service, analytics, or application server.
+**Version:** 2.3.0 · **Schema:** 5 · **DB:** brain v1 · **PWA:** `brain-v2.3.0` · **Graph API:** `v26.0` (configurable)
 
-Use ordinary language to create and find tasks, reminders, notes, people,
-expenses, debts, inventory, habits, journal entries, events, and photos. When
-you choose an external action, Brain hands off through a standard device or web
-API; it never silently sends messages, publishes social posts, or changes a
-third-party account.
+Brain is a **private, offline-first personal assistant PWA** that lives in your browser. All personal records — tasks, reminders, notes, people, money, debts, inventory, habits, journal, events, photos, and Instagram Reel drafts — are stored locally in IndexedDB. There is no Brain account, cloud sync, analytics backend, or bundled server.
 
-> **Important:** Local-only does not mean encrypted. Anyone with access to this
-> browser profile or device may be able to access its site data. Keep regular
-> backups and use your device’s lock/screen security for sensitive information.
+You interact with Brain in plain language. When you choose an external action — a call, email, map, or an Instagram Reel publish — Brain hands off through a standard device or Meta Graph API call **only after your explicit confirmation**. Nothing is sent without your tap.
+
+> **Security note:** Local-only does not mean encrypted-at-rest. Anyone with access to your browser profile or device can read site data. Use your device lock and regular [encrypted backups](#backup-restore-and-data-safety) for sensitive information. See [Threat Model](../docs/threat-model.md).
 
 ## Contents
 
-- [Run or install Brain](#run-or-install-brain)
-- [What Brain stores](#what-brain-stores)
-- [Natural-language examples](#natural-language-examples)
-- [Device and external actions](#device-and-external-actions)
-- [Photos and attachments](#photos-and-attachments)
-- [Backup, restore, and data safety](#backup-restore-and-data-safety)
-- [Reminders and notification limits](#reminders-and-notification-limits)
-- [Offline behavior and privacy](#offline-behavior-and-privacy)
-- [Accessibility and mobile use](#accessibility-and-mobile-use)
-- [Browser support and honest limitations](#browser-support-and-honest-limitations)
-- [Development and verification](#development-and-verification)
+- [What Brain does](#what-brain-does)
+- [Local-first architecture](#local-first-architecture)
+- [Personal assistant capabilities](#personal-assistant-capabilities)
+- [Natural-language interaction](#natural-language-interaction)
+- [Instagram Business integration](#instagram-business-integration)
+- [Publishing modes: Manual vs Automated](#publishing-modes-manual-vs-automated)
+- [What works offline vs what needs a network](#what-works-offline-vs-what-needs-a-network)
+- [Storage, backup & recovery](#storage-backup--recovery)
+- [Privacy model](#privacy-model)
+- [Security boundaries](#security-boundaries)
+- [Run or install](#run-or-install)
+- [Development & verification](#development--verification)
+- [Configuration](#configuration)
+- [Production build & deployment](#production-build--deployment)
+- [Known limitations](#known-limitations)
 
-## Run or install Brain
+---
 
-Brain is a static ES-module web app. Serve this directory from a web server;
-do not open `index.html` directly from the file system.
+## What Brain does
+
+Brain unifies everyday tracking in one local store with quick actions:
+
+| Area | What you can do |
+|------|-----------------|
+| **Tasks** | Create one-time or recurring (daily/weekly/monthly/yearly) tasks with due dates/notes; complete (creates next occurrence for recurring), reopen, edit, delete. |
+| **Reminders** | One-time or recurring reminders with snooze/dismiss/complete; export one-time as `.ics`. |
+| **Notes** | Plain or “private” notes (label only, not encryption); copy/share/edit/delete. |
+| **People** | Names, aliases, phones, emails, birthdays, addresses, Instagram handles; resolve by alias in commands. |
+| **Money & debts** | Income, expenses, categories, “who owes whom”, settled/open debts. |
+| **Stock** | Add/consume inventory, low-stock thresholds, adjustment history. |
+| **Habits & journal** | Once-per-day habit log, journal entries/moods, lightweight health entries (medication, sleep, weight, steps, BP). |
+| **Events** | Dated events with location; export RFC 5545 `.ics`. |
+| **Photos** | Import safe raster images (MIME + header validated), preview/share/delete, attach to journal. |
+| **Instagram Reels** | Draft Reels from local video + caption/hashtags → explicitly approve → publish to your Meta Business account. |
+| **Search** | `searchAll` across all 13 collections, ranked. |
+
+The **Command Centre** (`docs/command-centre.md`) shows pending actions, tasks↔events, reminders↔tasks, money/stock summaries, and a content calendar. The **Automation Centre** (`docs/automation-centre.md`) lists permissions, rules, queue, and history.
+
+## Local-first architecture
+
+```mermaid
+graph TB
+  UI[UI: index.html + app.js + cards + caps] --> Engine[Engine: intent.js + actions.js + context.js + search.js]
+  Engine --> Store[Store: store.js + validate.js + db.js]
+  Store --> DB[(IndexedDB: brain v1 / kv)]
+  DB --> LS[(localStorage fallback)]
+  DB --> MEM[(Memory fallback)]
+  UI --> SW[Service Worker: sw.js v2.3.0]
+  SW --> Cache[(Cache: 41 precached assets)]
+  UI -. optional .-> Meta[Meta Graph API v26.0]
+  UI -. optional .-> Exchange[Token-exchange service]
+  Store -.-> Backup[(JSON / brain-enc-v2)]
+```
+
+- **Store:** `Store` holds all 13 collections in memory, sanitizes every input via `validate.js`, persists through a write queue + 5-pass `flush()`/`_dirtySet` + `_queueWrite` transaction. Schema migration (`0→5`) is atomic with `backup:pre-migration:*`.
+- **Persistence:** IndexedDB preferred → localStorage (`brain:v2:` prefix) → memory. `isPersistent` flag and banner distinguish durable vs ephemeral.
+- **Service Worker:** Precaches 41 assets, `skipWaiting`/`clients.claim()`, cache-first for JS/CSS, network-then-cache for navigation, `activate` deletes only `brain-*` caches. See `docs/pwa-lifecycle.md`.
+- **Architecture doc:** `docs/architecture.md`
+
+## Personal assistant capabilities
+
+All records are browsable via the menu and via NL “show …” commands. Example quick actions:
+
+| Capability | Supported | Notes |
+|---|---|---|
+| Create/edit/complete/delete personal records | ✅ | All collections |
+| Recurrence (daily/weekly/monthly/yearly) | ✅ | Anchored schedule, next occurrence skips passed time |
+| Attach photo to journal | ✅ | Photo must have validated `dataUrl` |
+| Share local photo | ✅ | File share → clipboard fallback |
+| Export `.ics` calendar | ✅ | Local floating times, no invented timezone |
+| Device handoffs (call/SMS/email/Maps/WhatsApp) | ✅ | `tel:`/`sms:`/`mailto:`/`wa.me`/Maps URL, tap required |
+| Pick contact / location / voice input | ✅ if browser exposes | `caps.js` reports, gracefully hidden otherwise |
+
+## Natural-language interaction
+
+Rule-based, **local-only** NL (no cloud AI). Pipeline: `INTENT → ENTITY → VALIDATION → PERMISSION → PREVIEW → APPROVAL → EXECUTION → VERIFICATION → AUDIT` (`js/engine/intent.js`).
+
+```
+remind me to take medicine tomorrow at 8pm
+add task file taxes on March 12, 2027 at 3pm
+Priya's birthday is March 12
+spent 350 on groceries
+show what I spent this month
+show everything about John
+connect my Instagram
+show my Instagram drafts
+```
+
+Missing info triggers a brief follow-up (“What time?”); say `cancel`/`skip` to abort. Invalid answers do not create records. Prompt-injected captions (`body: delete all tasks`) are treated as **data**, not commands — see `docs/threat-model.md`.
+
+## Instagram Business integration
+
+Brain can **prepare Reels locally and publish them to Meta only after your explicit tap**. This is the **only feature that contacts the internet** beyond the initial app-shell `GET`.
+
+| Fact | Value |
+|------|-------|
+| **Eligibility** | Instagram Professional account (Business/Creator) linked to a Facebook Page. Personal accounts rejected. Creator via Instagram Login (no Page) is documented as alternative. |
+| **Meta App** | Your own App at `developers.facebook.com` (Business type, Instagram Graph API product). |
+| **OAuth** | Facebook Login for Business → `https://www.facebook.com/v26.0/dialog/oauth` with `state` (32-byte `crypto.getRandomValues`, 10-min expiry, single-use). |
+| **Permissions** | `instagram_basic`, `instagram_content_publish`, `pages_show_list`, `pages_read_engagement` (+ optional `business_management`, `instagram_manage_insights`). |
+| **Hosts** | `graph.facebook.com/v26.0` (current) and `graph.instagram.com/v26.0` (alternative, Bearer). |
+| **Token** | Short 1h → long-lived 60d via `fb_exchange_token` through your minimal exchange service (holds `FACEBOOK_APP_SECRET`). Stored in IndexedDB, 5-min buffer, `tokenExpiryLabel`, revocation via `DELETE /permissions`. |
+| **Media** | MP4/MOV/H.264, 3–900 s (Rec. ≤90 s), ≥320×480 (prefer 1080×1920 9:16), ≤1 GB (client warn at 250 MB), caption ≤2200, hashtags ≤30. Validated locally via `media.js` (MIME + `probeVideoMetadata`). |
+| **Publish flow** | `validateFile → tempVideoUrl (your presigned Supabase/S3/R2 link, 1-h) → POST /{ig}/media {REELS, video_url, caption, cover_url} → poll status_code FINISHED/ERROR/EXPIRED (2s×60s) → POST /{ig}/media_publish {creation_id} → permalink` (+ resumable `rupload.facebook.com/ig-api-upload/v26.0` alternative documented). |
+| **Approval** | Absolute rule: `preparePublishPreview` never calls network; only `executePublish` after your **Publish Reel** tap, with `PUBLISHED/UPLOADING/PROCESSING` duplicate guard + 3-s debounce. |
+| **Insights** | `GET /{ig}/insights?metric=impressions,reach&period=day` if scope granted; otherwise local `byStatus/publishedThisMonth` fallback. |
+
+Full endpoint, host, rate-limit, error-code, and production App Review guide: `docs/instagram-integration.md` (verified against `developers.facebook.com` 2026-11-06) and `docs/api-compatibility.md`.
+
+> **External communication disclosure:** Connecting Instagram, exchanging your OAuth `code` for an access token, and publishing a Reel each generate `fetch` calls to `graph.facebook.com` / `*.facebook.com` and your configured exchange host. **All other Brain operations — creating tasks, notes, reminders, money, journal, search, photo import, backup creation — never leave the device.** See `docs/privacy-audit.md`.
+
+## Publishing modes: Manual vs Automated
+
+Brain supports two modes, documented in `docs/automation-centre.md`:
+
+| Mode | Default | What it does | Restrictions |
+|------|---------|--------------|--------------|
+| **Manual (MANUAL)** | ✅ Default | You queue a `READY` draft → it becomes `AWAITING_APPROVAL` or `SCHEDULED` → you explicitly approve each publish. | Automation actor blocked (`executePublish` returns `Automation disabled or paused`). |
+| **Automated (AUTOMATED)** | Opt-in | Rules you create (`automation.js:isEligibleForAutomation`) can auto-publish **only** drafts you tick in `eligibleDraftIds` (plus optional tag/name Filters, allowed days/hours). | Rules ≤50, `eligibleDraftIds` ≤100, `maxPerDay` 1–10, history 200. Re-validation at `processQueue` execution; empty allowlist → no eligibility. Pause is immediate (`automation.paused` checked each cycle). |
+
+No rule means no auto-publish. The **Automation Centre** lists every rule, its purpose, and pause/disable controls — you never grant “publish-all.”
+
+## What works offline vs what needs a network
+
+| Offline (IndexedDB only) | Needs network |
+|---|---|
+| Tasks, reminders, notes, people, money/debts, stock, habits, journal, events, photo import, local search, backup create/restore (download prompt still works), command processing | Initial shell download, Instagram OAuth (`facebook.com/v26.0/dialog/oauth`), token exchange (`your-exchange POST`), Reel publish (`graph.facebook.com/v26.0/...`), fetching insights; external handoffs (tel/sms/mailto/wa.me/Maps) open other apps; browser speech (vendor service) |
+
+Brain never claims a handoff completed — it says “opening” and the destination app determines success. See `docs/pwa-lifecycle.md` for offline install behaviour.
+
+## Storage, backup & recovery
+
+- **Store:** `V.COLLECTIONS` (13) in `db.js` `brain` v1 `kv` objectStore; `MAX_RECORDS_PER_COLLECTION 10_000`; `MAX_BACKUP_CHARS 25 MB`.
+- **Migration:** `Store.init()` sanitizes, repairs journal→photo refs, writes `backup:pre-migration:{schema}->5:{ts}` before bump, reports `corruptionReport`. Future schema → warning, no data loss.
+- **Integrity:** `mediaIntegrityReport`/`storageReport`, `corruptionReport.checked`, `fingerprint` dedup on merge (`type:stableJson(copy)`).
+- **Export:** `exportState()` → `{app:"brain", schema:5, exportedAt, settings, collections, meta:{counts}}`. Encrypted: `encryptBackup(json, password)` → `brain-enc-v2.<salt>.<iv>.<cipher>` (PBKDF2-HMAC-SHA256 600k, AES-GCM 256, 16 B salt/12 B IV unique, tag-authenticated). `v1` (120k) still decryptable.
+- **Import:** `previewImport` validates `app==brain`, per-collection `sanitizeRecord`, rejects oversize/malformed/duplicate IDs; **Merge** (dedup by id+fingerprint) or **Replace** (confirm `delete-{type}` token + rollback on failure). Encrypted needs password; wrong password → `Decryption failed — wrong password or corrupted`.
+- **Quotas & fallback:** `onPersistenceError` detects `QuotaExceeded`, `flush()` 5-pass retry, prominent `Temporary storage (Memory)` banner when `!isPersistent` (private browsing). See `docs/backup-recovery.md`.
+
+## Privacy model
+
+See `docs/privacy-audit.md` + `docs/media-transfers.md`:
+
+- No Brain backend, analytics, fonts, or trackers. `fetch` only in `auth.js`/`api.js`/`insights.js`/`sw.js`.
+- Personal records never leave the device. Only approved `video_url + caption + cover_url` goes to `graph.facebook.com`; OAuth `code→token` goes to your exchange.
+- Temp media: short-lived presigned URLs (recommend 1 h), stored as `instagramDraft.tempVideoUrl`, identified by `isPrivateUrl` (`x-amz-signature|signature|sv|sig|token|expiry|expires` or `search.length>20`), deleted after publish or 48 h stale, never logged.
+- Backups are local files via Save Blob — never uploaded. Encrypted backups are opaque outside your passphrase.
+- Site data is per browser profile; not synced. Destination app policies (WhatsApp/Maps/Meta) apply after handoff.
+
+## Security boundaries
+
+See `docs/threat-model.md`:
+
+| Boundary | Protection |
+|----------|------------|
+| **XSS** | `validate.js` `cleanText`/`cleanCaption`/hashtag limits; rendering via `textContent`/`E.div` builder; no `innerHTML` with user data; dynamic cover preview uses `createElement('img')`. `validateFileBasics`+`isSafeImageDataUrl` (MIME+header) for photos. |
+| **CSRF** | OAuth `state` 32-byte random + timestamp, `sessionStorage` `brain:instagram:oauth_state`, format `/^[a-z0-9]+-[0-9a-f]{64}$/`, 10-min expiry, single-use (cleared even on format fail), clock-skew −1 s. |
+| **Secrets** | `FACEBOOK_APP_SECRET` only in exchange service env (`ALLOWED_REDIRECT_URI/ORIGINS` allowlist, CORS-limited). Client holds only redirect/host. `grep APP_SECRET` outside `server/` → 0. |
+| **CSP** | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https://graph.facebook.com https://*.facebook.com https://*.supabase.co https://*.amazonaws.com https://*.r2.cloudflarestorage.com; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' https://www.facebook.com; frame-ancestors 'none'; worker-src 'self'` |
+| **Prompt injection** | Captions/bodies treated as data (`intent.js` cleanText), never as commands; destructive `delete` requires confirm + undo stack. |
+| **Publish auth** | `isDuplicatePublish`/`canTransition`, `MANUAL` blocks automation actor, debounced guard `createPublishGuard` 3s, atomic `UPLOADING` lock before network. |
+| **Rate/dedup** | `checkRateLimit` advisory 25/day 5/h, defer 30 m; `isContainerExpired` 24 h-5 m; queue `MAX_QUEUE_SIZE 100`, fencing `leaseToken` (see Architecture). |
+| **Audit** | Every publish/automation writes history `{at, action, fromStatus, details, actor, containerId, mediaId}`; diagnostics panel (10 fields, token redacted) copies redacted state. |
+
+## Run or install
 
 ```bash
 cd brain
-python3 -m http.server 8000
-# Open http://localhost:8000
+python3 -m http.server 8000   # or npx serve .
+# open http://localhost:8000            (dev, no Instagram publish without your public host)
+# open https://YOUR_HOST/                (production, HTTPS required)
 ```
 
-`localhost` is appropriate for development. For a phone, another computer, or
-production hosting, use **HTTPS**. Service workers, installation, notifications,
-location, clipboard, contact picking, and some sharing features are restricted
-to secure contexts by browsers.
+Do **not** open `index.html` via `file://`.
 
-After the first successful load, the service worker caches Brain’s app shell,
-so its core interface and local data can continue working offline.
+| Platform | Install | Notes |
+|----------|---------|-------|
+| **Android / desktop Chromium** | Menu button appears only on real `beforeinstallprompt` → browser prompt | Installed PWA keeps app available longer. |
+| **iPhone/iPad** | Share → *Add to Home Screen* | No browser auto-install prompt; follow guidance. |
+| **After install** | Install control hides | Does **not** guarantee background alarms — OS may suspend. See Reminders. |
 
-### Install as an app
+First load caches the shell; reload works offline.
 
-- **Android and desktop Chromium browsers:** Brain shows an install action only
-  when the browser provides a real install prompt. Follow the browser prompt.
-- **iPhone and iPad:** open Brain in your browser’s Share menu and choose
-  **Add to Home Screen**. In Safari, the path is **Share → Add to Home Screen**.
-- **Already installed:** the install control stays hidden rather than pretending
-  it can install again.
+## Development & verification
 
-Installation makes Brain easier to launch and can improve how long a browser
-keeps it available, but it does **not** turn a web app into a guaranteed
-background alarm service. See [Reminders and notification limits](#reminders-and-notification-limits).
-
-## What Brain stores
-
-Everything below is stored locally in the current browser profile.
-
-| Area | What you can do |
-| --- | --- |
-| **Tasks** | Add one-time tasks, due dates, notes, and daily/weekly/monthly/yearly interval recurrence; complete, reopen, edit, or delete them. Completing a recurring task creates one future occurrence rather than duplicating it. |
-| **Reminders** | Create one-time or recurring reminders, snooze them, dismiss/complete them, and export one-time reminders to a calendar file. |
-| **Notes** | Keep ordinary or private notes; copy, share, edit, and delete them. “Private” is an in-app label, not encryption. |
-| **People** | Store names, aliases, phone numbers, email addresses, locations, birthdays, and Instagram handles. Resolve people by name or alias in commands. |
-| **Photos** | Import a supported image, view it, share/save a copy, attach it to a journal entry, or remove it. Camera capture is offered only where the browser exposes a mobile capture picker. |
-| **Events** | Save dated events with an optional location and export a standards-compatible `.ics` calendar file. |
-| **Money and debts** | Track income, expenses, categories, who owes whom, and settled/open debt status. |
-| **Stock** | Add or consume inventory, set low-stock thresholds, adjust quantities, and review retained adjustment history. |
-| **Habits and journal** | Log a habit once per day, record journal entries/moods, and keep lightweight health-style entries such as medication, sleep, weight, steps, or blood pressure. |
-
-The menu provides browsable lists and real edit/delete controls for each stored
-collection. Natural-language requests such as “show everything about John” run
-a local cross-record search. The visible chat conversation is a current-session
-interface, not an encrypted or cross-device conversation archive.
-
-## Natural-language examples
-
-Start with your name, then type or use voice input where available.
-
-```text
-remind me to take medicine tomorrow at 8pm
-remind me to water the plants every Sunday at 9am
-add task file taxes on March 12, 2027 at 3pm
-submit the assignment by Friday
-remember: Wi-Fi password is Home1234
-Priya's birthday is March 12
-John's number is +91 98765 43210
-John lives at 12 Market Road
-spent 350 on groceries
-salary came in 45000
-Ravi owes me 500
-add 5 kg of rice
-used 3 eggs
-did yoga today
-I felt great today
-schedule dentist appointment tomorrow at 3pm
-```
-
-Ask questions and use action-oriented requests too:
-
-```text
-what's coming up this week?
-show my reminders
-show me all birthdays this month
-how much did I spend this month?
-who owes me?
-how much sugar do we have?
-what did I do yesterday?
-show everything about John
-call John
-text John "I'll be there at 7"
-email John the project update
-navigate to John's house
-open John's Instagram
-share today's plan
-```
-
-Brain parses common relative dates, weekdays, explicit calendar dates, clock
-times, and recurring schedules. It asks a short follow-up when information is
-missing—for example, a reminder date without a time. You can retry that answer
-or say **cancel**/**skip**; an invalid answer does not silently create a
-reminder or event.
-
-Natural-language understanding is intentionally local and rule-based. Phrase a
-request more directly if Brain asks for clarification; it does not send your
-text to an AI service.
-
-## Device and external actions
-
-The same capability-aware action system is used by cards, menu shortcuts,
-notifications, and natural-language commands. A control is shown only when the
-record and current browser make it meaningful. Every external handoff requires
-your tap.
-
-| Action | What Brain actually does | What it does **not** do |
-| --- | --- | --- |
-| **Call** | Opens a `tel:` link for a valid phone number. | It cannot place or confirm a call. |
-| **Text** | Opens the system SMS composer using an `sms:` link; text can be prefilled. | It cannot send the SMS. |
-| **Email** | Opens the configured mail client with a `mailto:` recipient, subject, and body. | It cannot send email or verify delivery. |
-| **WhatsApp** | Opens an official `wa.me` conversation link when a usable international number is known, or WhatsApp’s official share route when only text is available. | It cannot pick a recipient automatically, attach/send a message itself, or read WhatsApp. |
-| **Maps and directions** | Opens a Maps search/directions handoff for a saved address, supplied place, or approved current coordinates. | It does not track location in the background. |
-| **Current location** | Requests foreground browser location permission only after you tap the action, then opens the location in Maps. | It does not continuously collect or retain location. |
-| **Instagram** | Opens a saved public profile URL. “Share to Instagram” uses the system share sheet when the device offers it. | It cannot log in, upload, post, publish, schedule, or automate Instagram. |
-| **Share / copy** | Uses the native Web Share sheet when available. Otherwise it uses a real clipboard fallback for text, and a save/download fallback for files. | It does not claim a target app received shared data. |
-| **Calendar** | Builds and saves/downloads an RFC 5545 `.ics` event file for the user to open/import in a calendar app. | Browsers cannot silently add an event to a calendar. |
-| **Contacts import** | Uses the read-only Web Contacts Picker where exposed and only after your tap; selected contact data is copied into Brain. | It cannot write to your system address book or import without permission. |
-
-### Phone numbers and WhatsApp
-
-For direct WhatsApp chats, save an international number (for example,
-`+919876543210`) or set the country calling code in **Settings** for local
-numbers. Brain deliberately does not guess a country code, remove a trunk
-prefix, or send a message on your behalf.
-
-### Calendar export
-
-Use the **Calendar** action on an event, a due task, or an eligible reminder.
-The resulting `.ics` file has local/floating event times because Brain does not
-invent a timezone. Choose the calendar app yourself and review the import.
-
-### Voice input
-
-The microphone button is shown only if the browser exposes Web Speech
-recognition. Recognition may be absent, may require a network connection, and
-may use the browser/vendor’s speech service; this is separate from Brain’s
-local storage and command processing. Typed input always remains available.
-
-## Photos and attachments
-
-Photos are kept locally as image data in Brain’s storage and are included in a
-backup. The image workflow is deliberately bounded to protect browser storage:
-
-- Choose a supported raster image with the file picker, or use the camera
-  capture picker only where it is genuinely available.
-- Cancelled pickers do not create a photo record.
-- Brain rejects unsuitable files and oversized originals (over 12 MB).
-- Imported images are decoded and stored as a bounded JPEG data-URL copy
-  (4.75 million characters maximum) when the browser can process them.
-- You can preview, save a copy, share through a real system chooser/fallback,
-  attach a photo to a journal entry, or delete it.
-- Invalid image data and dangling journal-photo references are removed during
-  restore validation rather than rendered unsafely.
-
-Photo decoding and camera format support ultimately depend on the browser. If
-the device cannot decode a chosen image safely, Brain reports the failure and
-does not save a broken placeholder.
-
-## Backup, restore, and data safety
-
-Open **Settings** to back up or restore Brain.
-
-- **Back up:** creates a JSON snapshot and asks the browser to save it. Keep the
-  file somewhere you control; it can contain all of your stored personal data,
-  including photo data.
-- **Restore:** select a Brain JSON backup (maximum 25 MB). Brain previews
-  validated contents before changing current data.
-- **Merge:** keeps existing records and adds non-duplicate validated records.
-  It recognizes matching IDs and equivalent content where possible.
-- **Replace all:** after confirmation, replaces current local data with only
-  validated backup records.
-- **Validation:** malformed records, unsafe/invalid photo payloads, duplicate
-  IDs, and invalid attachment references are skipped or repaired. If a restore
-  cannot be completed, the app reports the failure and keeps current data.
-- **Erase all local data:** requires confirmation. It cannot be undone except by
-  restoring a backup.
-
-Browser storage can be cleared by browser settings, private/incognito-session
-rules, device cleanup, profile deletion, or storage pressure. Export backups
-regularly—especially before clearing browser/site data, changing phones, or
-using a browser’s “clear data” feature.
-
-## Reminders and notification limits
-
-Brain schedules and checks reminders while its page/app is able to run. It
-checks again when the app becomes visible, after reload, and through its
-service-worker notification routing when the browser can deliver it.
-
-- Enable notifications only when the browser presents its permission prompt.
-- One-time reminders become visibly fired until you complete or snooze them.
-- Recurring reminders use an anchored schedule; a reminder created after
-  today’s scheduled time waits for its next valid occurrence rather than
-  immediately firing an old occurrence.
-- Snoozes and fired state are persisted locally to reduce duplicate catch-up
-  alerts after reloads.
-- Notification taps/actions route back into an active Brain client where
-  possible, or open Brain with the relevant reminder context.
-
-**No browser can guarantee an alarm once the operating system has fully
-suspended or closed the web app.** Brain has no push server and makes no claim
-of guaranteed closed-app/background reminders. Install Brain for convenient
-access, keep browser notification permission enabled, and use a native alarm
-app for safety-critical reminders.
-
-## Offline behavior and privacy
-
-### Offline-first core
-
-Tasks, reminders, notes, people, money, debts, stock (including its adjustment
-history), habits, journal, events, photos, local search, backup/restore, and
-local command processing work from local data. The app shell is cached after a
-successful initial visit.
-
-### Things that need another app or network
-
-Calls, messages, email, WhatsApp, Maps, Instagram, calendar import, and a
-browser-provided speech service are external handoffs. Their target app,
-network connection, account state, and device configuration determine whether
-they finish successfully. Brain accurately says it is **opening** or **sharing**
-an action rather than claiming it completed it.
-
-### Privacy boundaries
-
-- Brain does not send stored data to a Brain backend because there is no Brain
-  backend.
-- Your data may leave the device only when you explicitly choose an external
-  action or manually move a backup file.
-- The destination app/site’s privacy policy applies after a handoff (for
-  example, WhatsApp, your mail client, Google Maps, or Instagram).
-- Site data is local to a browser profile; it is not automatically synced
-  between devices by Brain.
-
-## Accessibility and mobile use
-
-Brain is designed for touch and keyboard use:
-
-- Buttons are semantic controls with labels; unavailable capability-only
-  controls are not presented as fake buttons.
-- Sheets behave as modal dialogs: focus moves into the sheet, Tab/Shift+Tab is
-  contained, Escape/backdrop closes it, and page content is hidden from
-  assistive technology while open.
-- Menu state communicates its expanded/collapsed state.
-- Settings include a **Reduce motion** option.
-- Layout/action bars wrap for narrow screens, and the input area is sized for
-  mobile keyboards and safe-area insets.
-
-Use the in-app **Device capabilities** screen to see exactly which APIs the
-current runtime exposes (notifications, share, files, camera picker, voice,
-location, contacts, clipboard, and service worker). The screen reports support,
-not a promise that a third-party app will accept a handoff.
-
-## Browser support and honest limitations
-
-Brain targets current evergreen browsers, with best results in current Chrome
-on Android/desktop and Safari on iOS/iPadOS. Browser support varies by feature:
-
-| Platform | Expected core experience | Notable browser-dependent limits |
-| --- | --- | --- |
-| **Android Chrome / installed PWA** | Offline local data, install prompt when eligible, file/photo picker, external handoffs, and many Web Share/notification features. | Android/OS battery policies can suspend apps; notification timing is not an alarm guarantee. Contact picker, camera capture, file sharing, and speech vary by version/device. |
-| **iOS Safari / Add to Home Screen** | Offline local data, Share-menu installation guidance, file/photo picker, standard links, and supported sharing. | iOS may suspend installed web apps; closed-app alarms are not guaranteed. Some web APIs (contacts picker, camera capture behavior, file sharing, speech, service-worker notifications) vary by iOS release. |
-| **Desktop browser** | Core local data, backup/download, keyboard access, links, and normal file picker. | No camera capture button is advertised merely because a desktop input exposes `capture`; phone/SMS handlers and native share depend on installed apps/browser support. |
-
-If a browser does not expose a capability, Brain hides or degrades that action
-rather than showing a decorative control. For example, text sharing can fall
-back to copy, and a photo can fall back to saving a copy.
-
-## Development and verification
-
-This repository has no compile step or production backend. It verifies the
-static application shell and runs unit plus DOM smoke tests.
+No compile step. Tests run in Node with `fake-indexeddb`+`jsdom`.
 
 ```bash
-npm install
-npm test
-npm run build
+npm install                      # from brain/
+npm test                         # unit + UI smoke
+npm run test:unit                # only test/*.test.js
+npm run test:ui                  # only scripts/ui-smoke.mjs (needs npm install first)
+npm run build                    # verify 41 assets + syntax
 ```
 
-- `npm test` runs domain, persistence, intent/date, capability, external-action,
-  notification/service-worker, and UI smoke coverage.
-- `npm run build` verifies that the production app shell contains the required
-  static assets.
+| Check | Command | Result (2026-11-06) |
+|-------|---------|---------------------|
+| Unit | `npm run test:unit` | **136/136 pass** (caps/date/intent/store/validate/instagram/auth/media/stateMachine/security/privacy/migrate/sw…) |
+| Integration harness | `node audit.js` | **40/40 pass** (API v26.0, fencing, streak, security, privacy, browser) |
+| Certification harness | `node scripts/certification-harness.mjs` | **52/52 pass** (publishing 14 scenarios, security 15, privacy 7, recovery 11, build 5) |
+| Build | `npm run build` | `Production app shell verified (41 required assets)` |
+| Secret scan | `grep -r APP_SECRET brain --include=*.js \| grep -v server/` | 0 |
+| Deps | `npm audit` | 2 HIGH via dev-only `undici`/`source-map-js` (`jsdom`/`fake-indexeddb`) — 0 runtime deps |
 
-Before releasing a hosted build, manually check the deployed HTTPS version on:
+Pre-release manual checklist (HTTPS): Android Chrome in-browser + installed, iOS Safari + A2HS, desktop keyboard, permission cancel paths, offline reload, backup import/export, Instagram test-user connect → preview → explicit publish → permalink → disconnect. See `docs/release-checklist.md` + `docs/production-readiness-report.md`.
 
-1. Android Chrome both in-browser and installed;
-2. iOS Safari and an Add-to-Home-Screen install; and
-3. a desktop browser with keyboard-only navigation.
+## Configuration
 
-Test actual permission prompts, cancel paths, offline reload, backup/restore,
-notification behavior, safe-area/keyboard layout, and each external handoff on
-the device(s) you intend to support. Browser and OS policies can change outside
-this repository’s control.
+| What | Where | Required |
+|------|-------|----------|
+| Instagram App ID | `<meta name="brain-instagram-app-id" content="YOUR_APP_ID">` **or** `window.BRAIN_INSTAGRAM_APP_ID` **or** local dev `localStorage brain:instagram:appId` (enter in Instagram screen) | Yes for Instagram |
+| Exchange URL | `<meta name="brain-instagram-exchange" content="https://YOUR_EXCHANGE/api/instagram/exchange">` **or** `window.BRAIN_INSTAGRAM_EXCHANGE_URL` | Yes for prod OAuth |
+| Redirect URI | `window.BRAIN_INSTAGRAM_REDIRECT_URI` or `${origin}/auth/instagram/callback` (must be allowlisted in Meta → Valid OAuth Redirect URIs) | Yes — must match Meta dashboard |
+| Graph version | `<meta name="brain-graph-version" content="v26.0">` **or** `localStorage brain:graph:version` **or** `window.BRAIN_GRAPH_VERSION` | No — defaults `v26.0` (`INSTAGRAM_API_VERSION`) |
+| Country code (WhatsApp local numbers) | Settings → Country code | No |
+| All other personal settings | `settings` in IndexedDB (`name/currency/locale/countryCode/notifEnabled/reducedMotion/instagram`) | No |
 
-## License / use
+Exchange service env (deploy separately, stateless, no DB): `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `ALLOWED_REDIRECT_URI`, `ALLOWED_ORIGINS`. See `docs/instagram-setup.md` §3.
 
-This project is a local personal-data tool. Review your organization’s policy
-before storing sensitive health, financial, or contact data in any browser.
+## Production build & deployment
+
+- Host `brain/` as static files over **HTTPS** (SW/OAuth/Geolocation requirement).
+- Send `Strict-Transport-Security` + `X-Content-Type-Options: nosniff`; CSP is in `index.html`.
+- Do not publish `brain/server` secrets to static host; deploy exchange independently (Cloudflare Workers / Netlify / Vercel Function / Node).
+- `VERSION`/`SCHEMA_VERSION`/`DB_VERSION`/`INSTAGRAM_API_VERSION` must match `package.json`+`constants.js`+`sw.js`+`manifest` — `npm run build` asserts.
+- `VERSION=brain-v2.3.0` bump cleans old `brain-*` caches on `activate`; video blobs not in JSON backup — document for users.
+
+See `docs/pwa-lifecycle.md`, `docs/api-compatibility.md`, `docs/release-checklist.md`.
+
+## Known limitations
+
+- **Device lock matters:** Local data is not encrypted-at-rest; a backup JSON is plaintext unless you choose a passphrase (→ `brain-enc-v2`).
+- **Background publish unavailable:** PWAs cannot reliably auto-publish when closed. “Schedule” creates a local reminder you later approve; a server scheduler is future work.
+- **Temporary host required:** `video_url` must be a public HTTPS URL Meta can fetch. You supply a short-lived presigned host (Supabase/R2/S3) or self-host proxy (`UPLOAD_PROXY`). Brain does not invent a `blob:` Reels endpoint.
+- **Poll urgency:** Container polling is `2 s × 60 s`; Meta guidance is `60 s × 5`. Brain is slightly aggressive but within bounds and configurable via `pollContainerStatus({intervalMs,maxWaitMs})`.
+- **Browser variance:** Voice, share, camera capture, contacts, file sharing, and notification timing depend on browser/OS and may be absent — Brain hides unsupported controls rather than showing fakes.
+- **Token vault:** Browser storage is not a hardware vault; the exchange + encrypted backup are recommended. Private-browsing → ephemeral MemoryBackend with warning.
+
+Full limitations: `docs/pwa-lifecycle.md`, `docs/backup-recovery.md`, `docs/production-readiness-report.md`.
+
+---
+
+Brain stores your life locally. Only the Reel you approve ever meets Meta. Everything else stays on this device.
