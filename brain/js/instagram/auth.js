@@ -33,15 +33,39 @@ export function validateState(returnedState) {
     const stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STATE_KEY) : null;
     const tsRaw = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STATE_TS_KEY) : null;
     if (!stored || !returnedState) return { ok: false, reason: 'Missing OAuth state. Please try connecting again.' };
+    // Strict format: timestampHex-hex64
+    const fmtOk = /^[a-z0-9]+-[0-9a-f]{64}$/.test(String(returnedState));
+    const storedFmtOk = /^[a-z0-9]+-[0-9a-f]{64}$/.test(String(stored));
+    if (!fmtOk || !storedFmtOk) {
+      try { sessionStorage.removeItem(STATE_KEY); sessionStorage.removeItem(STATE_TS_KEY); } catch {}
+      return { ok: false, reason: 'OAuth state format invalid.' };
+    }
+    // Validate callback params: code must be alphanumeric, error must be known
     // Single-use: clear even on failure to prevent replay
     try { sessionStorage.removeItem(STATE_KEY); sessionStorage.removeItem(STATE_TS_KEY); } catch {}
     if (stored !== returnedState) return { ok: false, reason: 'OAuth state mismatch — possible CSRF. Please try again from Brain.' };
     const ts = tsRaw ? parseInt(tsRaw, 10) : 0;
+    if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'OAuth state timestamp missing.' };
     if (Date.now() - ts > STATE_EXPIRY_MS) return { ok: false, reason: 'OAuth request expired. Please connect again.' };
+    if (Date.now() - ts < -1000) return { ok: false, reason: 'OAuth state timestamp in future — clock skew.' };
     return { ok: true };
   } catch {
     return { ok: false, reason: 'Cannot validate OAuth state in this browser.' };
   }
+}
+
+export function validateCallbackParams(params) {
+  // Strict validation for ?code&state&error from Meta
+  const { code, state, error, errorDesc } = params || {};
+  if (error) {
+    const known = ['access_denied','server_error','interaction_required','temporarily_unavailable','unknown_error'];
+    const isKnown = known.some(k => String(error).toLowerCase().includes(k));
+    // Still return but flag unknown for audit
+    return { ok: false, error, errorDesc, unknownError: !isKnown };
+  }
+  if (code && !/^[A-Za-z0-9._-]{10,500}$/.test(String(code))) return { ok:false, reason:'Invalid authorization code format' };
+  if (state && !/^[a-z0-9]+-[0-9a-f]{64}$/.test(String(state))) return { ok:false, reason:'Invalid state format' };
+  return { ok:true };
 }
 
 export function clearStoredState() {

@@ -12,7 +12,7 @@ const required = [
   'js/actions/external.js', 'js/actions/system.js',
   'js/store/db.js', 'js/store/store.js', 'js/store/validate.js', 'js/store/migrate.js',
   'js/engine/actions.js', 'js/engine/context.js', 'js/engine/intent.js', 'js/engine/search.js',
-  'js/ui/cards.js', 'js/ui/commandCentre.js', 'js/ui/automationCentre.js', 'js/util/constants.js', 'js/util/date.js', 'js/util/util.js', 'js/util/crypto.js',
+  'js/ui/cards.js', 'js/ui/commandCentre.js', 'js/ui/automationCentre.js', 'js/ui/diagnostics.js', 'js/util/constants.js', 'js/util/date.js', 'js/util/util.js', 'js/util/crypto.js',
   'js/instagram/config.js', 'js/instagram/auth.js', 'js/instagram/api.js', 'js/instagram/media.js', 'js/instagram/publish.js', 'js/instagram/ui.js', 'js/instagram/stateMachine.js', 'js/instagram/automation.js', 'js/instagram/queue.js', 'js/instagram/coverPicker.js', 'js/instagram/insights.js', 'js/instagram/mediaTransfer.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'
 ];

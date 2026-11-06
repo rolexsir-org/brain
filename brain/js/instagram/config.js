@@ -36,9 +36,17 @@ export const CONFIG = Object.freeze({
     } catch {}
     return '';
   },
-  apiVersion: 'v21.0',
-  graphBase: 'https://graph.facebook.com/v21.0',
-  oauthDialog: 'https://www.facebook.com/v21.0/dialog/oauth',
+  get apiVersion() {
+    try {
+      const meta = typeof document !== 'undefined' ? document.querySelector('meta[name="brain-graph-version"]') : null;
+      if (meta && meta.content) return String(meta.content).trim();
+      if (typeof localStorage !== 'undefined') { const s=localStorage.getItem('brain:graph:version'); if(s) return String(s).trim(); }
+      if (typeof window!=='undefined' && window.BRAIN_GRAPH_VERSION) return String(window.BRAIN_GRAPH_VERSION).trim();
+    } catch {}
+    return 'v21.0';
+  },
+  get graphBase() { return `https://graph.facebook.com/${this.apiVersion}`; },
+  get oauthDialog() { return `https://www.facebook.com/${this.apiVersion}/dialog/oauth`; },
   // Minimum permissions for publishing Reels
   scopes: [
     'instagram_basic',

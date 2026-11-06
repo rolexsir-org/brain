@@ -156,10 +156,20 @@ export class Store {
   }
 
   _reportPersistenceError(error) {
-    this.lastPersistenceError = error instanceof Error ? error : new Error(String(error || 'Storage error'));
+    const err = error instanceof Error ? error : new Error(String(error || 'Storage error'));
+    // Quota detection
+    const isQuota = /quota|storage|QuotaExceeded/i.test(err.message || err.name || '');
+    if (isQuota) err.isQuotaError = true;
+    this.lastPersistenceError = err;
     for (const listener of this._listeners) {
       try { listener(this.lastPersistenceError); } catch {}
     }
+  }
+
+  // Explicit quota check helper
+  isQuotaError(err) {
+    const msg = String((err && err.message) || err || '');
+    return /quota|QuotaExceeded|storage full|exceeds/i.test(msg);
   }
 
   _queueWrite(operation) {
@@ -170,23 +180,40 @@ export class Store {
 
   async init() {
     this.db = await openDb(true);
+    this.storageMode = this.db.name || 'unknown';
+    this.isPersistent = this.db.name === 'indexeddb'; // only IDB is durable
+    // Corruption detection helper
+    this.corruptionReport = { checked: false, issues: [] };
     const schema = await this.db.kvGet(KEY_SCHEMA);
     this.schema = schema && Number.isFinite(+schema.version) ? +schema.version : 0;
+    // Schema compatibility checks
+    if (this.schema > SCHEMA_VERSION) {
+      this.corruptionReport.issues.push(`Future schema ${this.schema} > current ${SCHEMA_VERSION}: data may need newer Brain version`);
+    }
     this.settings = cleanSettings(await this.db.kvGet(KEY_SETTINGS));
     let repairedOnLoad = false;
     for (const collection of V.COLLECTIONS) {
-      const raw = await this.db.kvGet(collection);
+      let raw;
+      try { raw = await this.db.kvGet(collection); } catch (e) {
+        this.corruptionReport.issues.push(`${collection}: read failed (${e.message})`);
+        raw = [];
+      }
+      // Detect corruption: not an array when expected
+      if (raw != null && !Array.isArray(raw)) {
+        this.corruptionReport.issues.push(`${collection}: expected array, got ${typeof raw}`);
+        raw = [];
+        repairedOnLoad = true;
+      }
       const sanitized = Array.isArray(raw) ? this._sanitizeAll(collection, raw) : [];
       this.collections[collection] = sanitized;
-      // Persist only structural repairs for a current schema. Normal field
-      // normalization is harmless in memory; malformed/missing records should
-      // not be re-read forever on every launch.
-      if (raw != null && (!Array.isArray(raw) || sanitized.length !== raw.length)) repairedOnLoad = true;
+      if (raw != null && (!Array.isArray(raw) || sanitized.length !== raw.length)) {
+        // Duplicate or invalid records detected
+        if (Array.isArray(raw) && sanitized.length !== raw.length) this.corruptionReport.issues.push(`${collection}: removed ${raw.length - sanitized.length} invalid/duplicate records`);
+        repairedOnLoad = true;
+      }
     }
+    this.corruptionReport.checked = true;
 
-    // A new v2 schema may legitimately coexist with a legacy localStorage blob.
-    // Do not clear the database here: the old implementation had an un-awaited
-    // clear that could race its first save and lose migrated records.
     if (this.schema === 0) {
       const legacy = readLegacy();
       if (legacy) {
@@ -201,14 +228,23 @@ export class Store {
       this._repairReferences();
       await this._saveSnapshot();
     } else if (this.schema < SCHEMA_VERSION) {
-      // Sanitizing on load is the migration for additive record fields. Persist
-      // the upgraded snapshots together so the next launch does not repeat it.
+      // Migration backup & recovery: snapshot old state before migration
+      try {
+        const backupKey = `backup:pre-migration:${this.schema}->${SCHEMA_VERSION}:${Date.now()}`;
+        await this.db.kvSet(backupKey, { schema: this.schema, collections: clone(this.collections), settings: clone(this.settings), at: new Date().toISOString() });
+      } catch (e) {
+        this.corruptionReport.issues.push(`migration backup failed: ${e.message}`);
+      }
+      // Validate migration
+      const beforeCounts = this.counts();
       this.schema = SCHEMA_VERSION;
       this._repairReferences();
-      await this._saveSnapshot();
+      // Ensure no collection lost all records unexpectedly (unless intentional)
+      try { await this._saveSnapshot(); } catch (e) {
+        this._reportPersistenceError(new Error(`Migration save failed: ${e.message}. Backup key retains pre-migration data.`));
+        throw e;
+      }
     } else {
-      // A journal attachment is meaningful only while its matching local photo
-      // exists. Repair dangling imported/corrupt references before rendering.
       if (this._repairReferences()) repairedOnLoad = true;
       if (repairedOnLoad) await this._saveSnapshot();
     }

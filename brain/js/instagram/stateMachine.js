@@ -68,14 +68,15 @@ export function isContainerExpired(containerCreatedAt, now = Date.now()) {
   } catch { return true; }
 }
 
-// Rate limit backoff: Instagram allows ~25 publishes/day, track locally
+// Rate limit advisory — configurable; Meta authoritative (see docs/api-compatibility.md)
+import { INSTAGRAM_PUBLISH_LIMITS } from '../util/constants.js';
 export function checkRateLimit(history, now = Date.now()) {
   const dayAgo = now - 24 * 3600 * 1000;
   const recent = history.filter(h => {
     try { return new Date(h.publishedAt || h.createdAt).getTime() > dayAgo; } catch { return false; }
   });
-  const DAILY_LIMIT = 25;
-  const HOURLY_LIMIT = 5;
+  const DAILY_LIMIT = (INSTAGRAM_PUBLISH_LIMITS && INSTAGRAM_PUBLISH_LIMITS.DAILY) || 25;
+  const HOURLY_LIMIT = (INSTAGRAM_PUBLISH_LIMITS && INSTAGRAM_PUBLISH_LIMITS.HOURLY) || 5;
   const hourAgo = now - 3600 * 1000;
   const hourRecent = recent.filter(h => new Date(h.publishedAt || h.createdAt).getTime() > hourAgo);
   if (recent.length >= DAILY_LIMIT) return { ok: false, reason: `Daily limit (${DAILY_LIMIT}/day) reached. Try tomorrow.` };

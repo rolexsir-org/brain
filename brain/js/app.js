@@ -74,7 +74,28 @@ async function boot() {
   setupInstall($('#installBtn'));
   registerSw().then(registration => { swRegistration = registration || null; }).catch(() => {});
   bootVoice();
-  store.onPersistenceError(() => toast('Brain could not save the latest change. Check device storage, then try again.'));
+  // Storage mode prominence (L): never silently use Memory fallback
+  if (store && !store.isPersistent) {
+    const mode = store.storageMode || 'memory';
+    setTimeout(()=> {
+      pushBot(`⚠️ Temporary storage only (${mode}): Brain could not access permanent storage on this device (private browsing or storage blocked). Your data will disappear when you close this tab. Export a backup before leaving if you entered anything important.`, [], { sys:true });
+      const banner = document.createElement('div');
+      banner.id='storage-warning';
+      banner.setAttribute('role','alert');
+      banner.style.cssText='position:fixed;top:0;left:0;right:0;background:#f59e0b;color:#000;padding:8px 12px;text-align:center;font-size:13px;z-index:9999;border-bottom:2px solid #92400e';
+      banner.textContent=`Temporary storage (${mode}) — data will NOT persist after close. Tap Menu → Back up to save.`;
+      document.body.prepend(banner);
+    }, 500);
+  }
+  if (store.corruptionReport && store.corruptionReport.issues && store.corruptionReport.issues.length) {
+    console.warn('Corruption report:', store.corruptionReport.issues);
+    pushBot(`Brain detected and repaired ${store.corruptionReport.issues.length} storage issue${store.corruptionReport.issues.length===1?'':'s'}: ${store.corruptionReport.issues.join('; ').slice(0,300)}`, [], { sys:true });
+  }
+  store.onPersistenceError((err) => {
+    const quota = err && (err.isQuotaError || /quota/i.test(err.message||''));
+    if (quota) toast('Storage full — Brain could not save. Free space or export and erase old photos. Your last change is only in memory.');
+    else toast('Brain could not save the latest change. Check device storage, then try again.');
+  });
   // Durable state recovery — interrupted publishes
   try {
     const { recoverInterruptedPublishes } = await import('./instagram/publish.js');
@@ -448,6 +469,8 @@ function openMenu() {
   body.append(menuButton('💾 Back up my data', () => { closeSheet(); doExport(); }));
   body.append(menuButton('⚙️ Settings', () => openSettings()));
   body.append(menuButton('🧰 Device capabilities', () => openDiagnostics()));
+  body.append(menuButton('🔍 Diagnostics & release', async () => { closeSheet(); const mod=await import('./ui/diagnostics.js'); mod.openDiagnosticsPanel(ctx); }));
+  body.append(menuButton('⛔ Emergency stop queue', async () => { const { setEmergencyStop } = await import('./instagram/queue.js'); setEmergencyStop(true); toast('Queue emergency-stopped. Resume in Automation Centre.'); }));
   body.append(menuButton('✨ Add sample data', () => { closeSheet(); loadDemo(); }));
   openSheet();
 }
@@ -829,16 +852,35 @@ async function mutate(operation, fallbackMessage) {
   toast(result.text || fallbackMessage);
   return { ok: true, result };
 }
+let _undoStack = []; // for M: undo reversible deletes
+function pushUndo(kind, record){ _undoStack.push({ kind, record, at: Date.now() }); if (_undoStack.length>20) _undoStack.shift(); }
+async function undoLast(){
+  const last = _undoStack.pop();
+  if (!last) { toast('Nothing to undo.'); return; }
+  const restored = store.addSync(last.kind, last.record);
+  if (!restored) { toast('Could not undo — storage issue.'); return; }
+  await store.flush();
+  renderAll();
+  toast(`Restored ${last.record.title||last.record.name||last.kind} (undo).`);
+}
 async function deleteRecord(kind, id) {
   const record = store.get(kind, id);
   if (!record) { toast('That item is no longer available.'); return { ok: false }; }
   const label = record.title || record.name || record.person || 'this item';
   if (!window.confirm(`Delete “${label}”?`)) return { ok: false, cancelled: true };
+  pushUndo(kind, clone(record));
   const removed = await store.remove(kind, id);
-  if (!removed) { toast('Could not save that deletion. Your item was kept.'); return { ok: false }; }
+  if (!removed) { _undoStack.pop(); toast('Could not save that deletion. Your item was kept.'); return { ok: false }; }
   renderAll();
-  toast('Deleted.');
-  return { ok: true };
+  // Show undo toast with action
+  const undoNudge = document.createElement('button');
+  undoNudge.textContent='Undo';
+  undoNudge.style.cssText='margin-left:8px;background:#fff;border:1px solid #333;padding:2px 6px;border-radius:4px;cursor:pointer';
+  undoNudge.addEventListener('click', ()=> undoLast());
+  toast('Deleted. ');
+  // attach undo after toast (simple)
+  setTimeout(()=>{ const t=document.getElementById('toast'); if(t) t.appendChild(undoNudge); }, 100);
+  return { ok: true, undone:false };
 }
 async function toggleDebt(id) {
   const debt = store.get('debt', id);

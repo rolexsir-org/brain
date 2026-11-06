@@ -13,12 +13,14 @@ export const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// Instagram Business Integration — constants aligned with Meta Graph API v21.0
-export const SCHEMA_VERSION_INSTAGRAM = 4;
-export const INSTAGRAM_API_VERSION = 'v21.0';
+// Instagram Business Integration — see docs/api-compatibility.md for version upgrades.
+// Limits are configurable and subject to Meta change — not permanent facts.
+export const SCHEMA_VERSION_INSTAGRAM = 5;
+export const INSTAGRAM_API_VERSION = 'v21.0'; // override via meta brain-graph-version or localStorage
 export const INSTAGRAM_OAUTH_DIALOG = 'https://www.facebook.com/v21.0/dialog/oauth';
 export const INSTAGRAM_TOKEN_ENDPOINT = 'https://graph.facebook.com/v21.0/oauth/access_token';
 export const INSTAGRAM_GRAPH_ENDPOINT = 'https://graph.facebook.com/v21.0';
+export const INSTAGRAM_PUBLISH_LIMITS = { DAILY: 25, HOURLY: 5, NOTE: 'Configurable; see docs/api-compatibility.md — Meta may change limits. Client limit is advisory, not authoritative.' };
 export const INSTAGRAM_REQUIRED_SCOPES = [
   'instagram_basic',
   'instagram_content_publish',
