@@ -69,3 +69,23 @@ test('every collection is sanitizable', () => {
     assert.ok(r.id && r.createdAt && r.updatedAt);
   }
 });
+
+test('Instagram draft cover fields never masquerade as each other', () => {
+  const hosted = sanitizeRecord('instagramDraft', { videoName: 'v.mp4', coverUrl: 'https://cdn.example/cover.jpg' });
+  assert.equal(hosted.coverUrl, 'https://cdn.example/cover.jpg');
+  assert.equal(hosted.coverDataUrl, null, 'a hosted URL must not be stored as inline image data');
+
+  const inline = sanitizeRecord('instagramDraft', {
+    videoName: 'v.mp4',
+    coverDataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD' + 'A'.repeat(120)
+  });
+  assert.equal(inline.coverUrl, null);
+  assert.ok(inline.coverDataUrl && inline.coverDataUrl.startsWith('data:image/jpeg'));
+
+  const unsafe = sanitizeRecord('instagramDraft', {
+    videoName: 'v.mp4',
+    coverUrl: 'data:text/html,<script>alert(1)</script>'
+  });
+  assert.equal(unsafe.coverUrl, null, 'non-image data URLs are dropped');
+  assert.equal(unsafe.coverDataUrl, null);
+});

@@ -35,9 +35,19 @@ do not open `index.html` directly from the file system.
 
 ```bash
 cd brain
-python3 -m http.server 8000
+npm start            # production static server: headers, allowlist, gzip, ETags
 # Open http://localhost:8000
+
+# For a quick throwaway look only. python's server sets no security headers and
+# exposes server/, test/, and package.json on the same origin.
+python3 -m http.server 8000
 ```
+
+`npm start` serves only the public app shell. It also adds the headers a real
+deployment needs (CSP with `frame-ancestors`, HSTS, `nosniff`, referrer policy),
+which is why it is the recommended way to preview a production build. See
+[`../docs/deployment.md`](../docs/deployment.md) for Netlify, Cloudflare Pages,
+Vercel, and the optional Instagram exchange service.
 
 `localhost` is appropriate for development. For a phone, another computer, or
 production hosting, use **HTTPS**. Service workers, installation, notifications,
@@ -199,9 +209,14 @@ Open **Settings** to back up or restore Brain.
 
 - **Back up:** creates a JSON snapshot and asks the browser to save it. Keep the
   file somewhere you control; it can contain all of your stored personal data,
-  including photo data.
-- **Restore:** select a Brain JSON backup (maximum 25 MB). Brain previews
-  validated contents before changing current data.
+  including photo data. Choose encryption if the file will leave your device:
+  a plain backup is readable by anyone who obtains it.
+- **Restore:** select a Brain backup (maximum 25 MB), plain JSON or encrypted
+  (`brain-enc-v1`/`v2`). Encrypted files ask for their passphrase and are
+  decrypted locally; Brain previews validated contents before changing current
+  data. Encryption uses AES-GCM with a PBKDF2-SHA256 key (600k iterations).
+  New encrypted backups require a passphrase of **at least 12 characters**;
+  older backups still open with whatever passphrase they were created with.
 - **Merge:** keeps existing records and adds non-duplicate validated records.
   It recognizes matching IDs and equivalent content where possible.
 - **Replace all:** after confirmation, replaces current local data with only
@@ -307,15 +322,24 @@ This repository has no compile step or production backend. It verifies the
 static application shell and runs unit plus DOM smoke tests.
 
 ```bash
-npm install
-npm test
-npm run build
+npm ci
+npm test                 # unit, integration, server, release gates, UI smoke
+npm run build            # verifies every precached asset exists
+npm audit                # must report 0 vulnerabilities
+npm run audit            # 40 independent acceptance checks (repo root script)
+npm run certify          # 52 certification checks
 ```
 
 - `npm test` runs domain, persistence, intent/date, capability, external-action,
-  notification/service-worker, and UI smoke coverage.
+  notification/service-worker, token-exchange, static-server, release-gate, and
+  UI smoke coverage.
 - `npm run build` verifies that the production app shell contains the required
   static assets.
+- `npm run audit` and `npm run certify` resolve paths from their own location,
+  so they work from any working directory and exit nonzero on failure.
+
+Version numbers live in `package.json`, `js/util/constants.js`, and `sw.js`; a
+release test fails if they disagree.
 
 Before releasing a hosted build, manually check the deployed HTTPS version on:
 

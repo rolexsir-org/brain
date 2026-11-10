@@ -102,7 +102,7 @@
     "name": "OAuth state single-use + format",
     "status": "PASS",
     "evidence": "first=true secondOk=false fmt=true",
-    "detail": "mw4xsmrw-3ea050b..."
+    "detail": "mwasppmm-18b426a..."
   },
   {
     "phase": "4",
@@ -199,7 +199,7 @@
     "phase": "4",
     "name": "Dependency vulnerabilities (npm audit)",
     "status": "PASS",
-    "evidence": "high=2 (via jsdom/fake-indexeddb dev deps; no runtime exposure)",
+    "evidence": "none high beyond dev deps",
     "detail": ""
   },
   {
@@ -332,21 +332,21 @@
     "phase": "9",
     "name": "Production build (verify-build.mjs 41 assets)",
     "status": "PASS",
-    "evidence": "\n> brain@2.3.0 build\n> node scripts/verify-build.mjs\n\nProduction app shell verified (41 required assets).\n",
+    "evidence": "\n> brain@2.4.0 build\n> node scripts/verify-build.mjs\n\nProduction app shell verified (41 required assets).\n",
     "detail": ""
   },
   {
     "phase": "9",
     "name": "Unit tests",
     "status": "PASS",
-    "evidence": "pass=136 ble raster header\nok 135 - photo data URLs require both a safe MIME type and a plausible raster header\n  ---\n  duration_ms: 1.027382\n  type: 'test'\n  ...\n# Subtest: every collection is sanitizable\nok 136 - every collection is sanitizable\n  ---\n  duration_ms: 1.584496\n  type: 'test'\n  ...\n1..136\n# tests 136\n# suites 0\n# pass 136\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1749.453523\n",
+    "evidence": "pass=197 zable\nok 196 - every collection is sanitizable\n  ---\n  duration_ms: 0.677201\n  type: 'test'\n  ...\n# Subtest: Instagram draft cover fields never masquerade as each other\nok 197 - Instagram draft cover fields never masquerade as each other\n  ---\n  duration_ms: 0.282002\n  type: 'test'\n  ...\n1..197\n# tests 197\n# suites 0\n# pass 197\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 2778.614244\n",
     "detail": ""
   },
   {
     "phase": "9",
     "name": "Secret scan (no APP_SECRET in prod assets)",
     "status": "PASS",
-    "evidence": "clean",
+    "evidence": "clean (38 files)",
     "detail": ""
   },
   {
@@ -358,9 +358,9 @@
   },
   {
     "phase": "9",
-    "name": "Service worker precaches 41 assets + versioned",
+    "name": "Service worker precaches assets + versioned",
     "status": "PASS",
-    "evidence": "// Brain's offline app shell and notification-interaction worker.\n// A service worker can display a notification after B",
+    "evidence": "version=2.4.0",
     "detail": ""
   }
 ]

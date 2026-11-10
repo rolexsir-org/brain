@@ -81,7 +81,16 @@ export function coverPickerUI(draft, onSelect) {
     } catch (e) { preview.textContent = e.message; }
   });
   wrap.querySelector('[data-action="cover-save"]').addEventListener('click', () => {
-    if (!currentDataUrl) { alert('Preview a frame first'); return; }
+    if (!currentDataUrl) {
+      // Inline, announced feedback instead of a blocking alert().
+      preview.textContent = '';
+      const note = document.createElement('span');
+      note.className = 'muted';
+      note.setAttribute('role', 'status');
+      note.textContent = 'Preview a frame first, then choose it.';
+      preview.append(note);
+      return;
+    }
     onSelect({ coverDataUrl: currentDataUrl, coverTimeSec: currentTime });
   });
   if (currentDataUrl) {

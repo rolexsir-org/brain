@@ -15,6 +15,10 @@ test('phone, SMS, mail and WhatsApp builders are conservative and encoded', () =
   assert.equal(Ext.waChatLink('9876500011'), null, 'no country code is guessed');
   assert.equal(Ext.waChatLink('9876500011', 'hello & bye', { countryCode: '91' }), 'https://wa.me/919876500011?text=hello%20%26%20bye');
   assert.equal(Ext.waChatLink('+919876500011', 'hello'), 'https://wa.me/919876500011?text=hello');
+  // National trunk prefixes must not be carried into international links.
+  assert.equal(Ext.whatsappNumber('09876500011', '91'), '919876500011');
+  assert.equal(Ext.whatsappNumber('0091 98765 00011', '91'), '919876500011');
+  assert.equal(Ext.whatsappNumber('0000', '91'), null);
 });
 
 test('map, Instagram and external links use legitimate public URL formats', () => {

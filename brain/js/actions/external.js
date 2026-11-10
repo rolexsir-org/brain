@@ -67,7 +67,11 @@ export function whatsappNumber(raw, countryCode = '') {
   if (number.startsWith('+')) return phoneDigits(number);
   const cc = String(countryCode || '').replace(/\D/g, '');
   if (!cc || cc.length > 3) return null;
-  const digits = phoneDigits(number);
+  // National trunk prefixes (a leading 0 in most countries) are not part of
+  // the international number; keeping them produced unreachable wa.me links
+  // such as 9109876500011 for "09876500011" + country code 91.
+  const digits = phoneDigits(number).replace(/^0+/, '');
+  if (!digits) return null;
   // A user may have saved the country code without the plus already.
   return digits.startsWith(cc) ? digits : cc + digits;
 }

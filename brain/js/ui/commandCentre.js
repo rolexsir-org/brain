@@ -154,4 +154,5 @@ export function openCommandCentre(ctx) {
 function openSheet(){
   const sheet=document.getElementById('sheet');
   if(sheet){ sheet.classList.add('open'); sheet.setAttribute('aria-hidden','false'); }
+  try { document.dispatchEvent(new CustomEvent('brain:sheet-open')); } catch {}
 }
