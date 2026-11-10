@@ -1,10 +1,17 @@
 #!/usr/bin/env node
-// BRAIN 2.3.0 — Production Certification Harness (Phases 3,4,5,6,9)
+// BRAIN — Production Certification Harness (Phases 3,4,5,6,9)
 // Executes adversarial publishing, security, privacy, migration, build checks.
 // Results are written to /tmp/cert-*.json and stdout for the report.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+
+// Resolve repository paths from this script's location so the harness runs from
+// any working directory (repo root, brain/, or CI) instead of assuming cwd.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const rooted = rel => (path.isAbsolute(rel) ? rel : path.join(ROOT, rel));
 
 const results = [];
 function record(phase, name, status, evidence, detail='') {
@@ -13,7 +20,9 @@ function record(phase, name, status, evidence, detail='') {
 }
 
 // Helpers
-function read(p){ try { return fs.readFileSync(p,'utf8'); } catch { return ''; } }
+function read(rel){ try { return fs.readFileSync(rooted(rel),'utf8'); } catch { return ''; } }
+function readDir(rel){ try { return fs.readdirSync(rooted(rel)); } catch { return []; } }
+function readDirEntries(rel){ try { return fs.readdirSync(rooted(rel), { withFileTypes: true }); } catch { return []; } }
 
 // ── PHASE 3 — Adversarial Publishing (14 scenarios) ─────────────────────────
 // We exercise Store + queue directly via node with fake-indexeddb / Memory
@@ -283,8 +292,8 @@ async function runPhase4(){
     const hasSafeDOM = cover.includes("createElement('img')") && cover.includes("img.src=dataUrl");
     record('4','DOM XSS coverPicker → DOM-safe', !hasDynamic && hasSafeDOM?'PASS':'FAIL', hasDynamic?'still dynamic innerHTML':'dom-safe');
     // sweep all js for innerHTML with user data
-    const allJs = fs.readdirSync('brain/js').length; // placeholder
-    const grepOut = spawnSync('grep',['-rn','innerHTML','brain/js','--include=*.js'],{encoding:'utf8'});
+    const allJs = readDir('brain/js').length; // placeholder
+    const grepOut = spawnSync('grep',['-rn','innerHTML','brain/js','--include=*.js'],{encoding:'utf8',cwd:ROOT});
     const lines=(grepOut.stdout||'').split('\n').filter(l=>l.trim());
     const risky=lines.filter(l=> !l.includes('brain/js/store/store.js') && l.includes('innerHTML') && (l.includes('${') || l.includes('caption') || l.includes('title')));
     // we allow static template innerHTML in coverPicker wrap
@@ -333,13 +342,14 @@ async function runPhase4(){
   // Service worker integrity + fetch allowlist
   try {
     const sw=read('brain/sw.js');
-    const hasCacheVersion=sw.includes('brain-v2.3.0') && sw.includes('caches.delete');
+    const declaredVersion=(read('brain/package.json').match(/"version"\s*:\s*"([^"]+)"/)||[])[1]||'';
+    const hasCacheVersion=declaredVersion && sw.includes(`brain-v${declaredVersion}`) && sw.includes('caches.delete');
     const hasNoExternalFetch=!sw.includes('google-analytics') && !sw.includes('facebook.net');
     record('4','Service worker integrity (versioned cache, no external fetch)', hasCacheVersion && hasNoExternalFetch?'PASS':'FAIL', `versioned=${hasCacheVersion} clean=${hasNoExternalFetch}`);
   } catch(e){ record('4','SW integrity','FAIL','',''+e.message); }
   // Dependency vuln (already captured via npm audit, but record)
   try {
-    const auditRaw=spawnSync('npm',['audit','--json'],{cwd:'brain',encoding:'utf8'});
+    const auditRaw=spawnSync('npm',['audit','--json'],{cwd:rooted('brain'),encoding:'utf8'});
     let audit=null; try{ audit=JSON.parse(auditRaw.stdout); }catch{}
     const high = audit?.metadata?.vulnerabilities?.high || 0;
     const detail = high ? `high=${high} (via jsdom/fake-indexeddb dev deps; no runtime exposure)` : 'none high beyond dev deps';
@@ -480,20 +490,33 @@ async function runPhase6(){
 
 async function runPhase9(){
   console.log('\n=== PHASE 9 — Release Engineering ===');
-  const bld=spawnSync('npm',['run','build'],{cwd:'brain',encoding:'utf8'});
+  const bld=spawnSync('npm',['run','build'],{cwd:rooted('brain'),encoding:'utf8',env:{...process.env,CI:'1'}});
   record('9','Production build (verify-build.mjs 41 assets)', bld.status===0?'PASS':'FAIL', (bld.stdout||bld.stderr).slice(0,200));
-  const unit=spawnSync('npm',['run','test:unit'],{cwd:'brain',encoding:'utf8'});
-  const m=unit.stdout.match(/pass (\d+)/i); const p=m?parseInt(m[1]):0;
-  record('9','Unit tests', p>=100?'PASS':'FAIL', `pass=${p} ${(unit.stdout.slice(-400))}`);
-  const secretScan=spawnSync('grep',['-r','FACEBOOK_APP_SECRET','brain', '--include=*.js'],{encoding:'utf8'});
-  const leak = (secretScan.stdout||'').split('\n').filter(l=> l.includes('FACEBOOK_APP_SECRET') && !l.includes('only on exchange') && !l.includes('server') && !l.includes('security.test')).length;
-  record('9','Secret scan (no APP_SECRET in prod assets)', leak===0?'PASS':'FAIL', leak? secretScan.stdout.slice(0,300):'clean');
+  const unit=spawnSync('npm',['run','test:unit'],{cwd:rooted('brain'),encoding:'utf8',env:{...process.env,CI:'1'}});
+  const m=(unit.stdout||'').match(/pass (\d+)/i); const p=m?parseInt(m[1]):0;
+  record('9','Unit tests', p>=100?'PASS':'FAIL', `pass=${p} ${((unit.stdout||'').slice(-400))}`);
+  // Scan only the assets that actually ship to the browser: the server, tests,
+  // and build scripts legitimately mention the environment variable.
+  const shipped = ['brain/index.html', 'brain/sw.js', 'brain/manifest.webmanifest'];
+  const collectJs = dir => {
+    let out = [];
+    for (const entry of readDirEntries(dir)) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) out = out.concat(collectJs(rel));
+      else if (/\.(js|css|html|webmanifest)$/.test(entry.name)) out.push(rel);
+    }
+    return out;
+  };
+  const shippedFiles = shipped.concat(collectJs('brain/js'), collectJs('brain/css'));
+  const leaks = shippedFiles.filter(rel => /FACEBOOK_APP_SECRET\s*=|client_secret['"]?\s*[:=]\s*['"][^'"]+['"]/.test(read(rel)));
+  record('9','Secret scan (no APP_SECRET in prod assets)', leaks.length===0?'PASS':'FAIL', leaks.length? leaks.join(', '):`clean (${shippedFiles.length} files)`);
   const html=read('brain/index.html');
   const hasCSP=html.includes('Content-Security-Policy');
   const hasManifest=html.includes('manifest.webmanifest');
   record('9','PWA shell references manifest + CSP', hasCSP && hasManifest?'PASS':'FAIL', `csp=${hasCSP} manifest=${hasManifest}`);
   const sw=read('brain/sw.js');
-  record('9','Service worker precaches 41 assets + versioned', sw.includes('brain-v2.3.0') && sw.includes('./js/app.js')?'PASS':'FAIL', sw.slice(0,120));
+  const declaredVersion9=(read('brain/package.json').match(/"version"\s*:\s*"([^"]+)"/)||[])[1]||'';
+  record('9','Service worker precaches assets + versioned', !!declaredVersion9 && sw.includes(`brain-v${declaredVersion9}`) && sw.includes('./js/app.js')?'PASS':'FAIL', `version=${declaredVersion9}`);
 }
 
 async function main(){
@@ -501,7 +524,8 @@ async function main(){
   console.log('\n=== SUMMARY ===');
   const pass=results.filter(r=>r.status==='PASS').length, fail=results.filter(r=>r.status==='FAIL').length, partial=results.filter(r=>r.status==='PARTIAL').length, nt=results.filter(r=>r.status==='NOT TESTED').length;
   console.log(`PASS ${pass}/${results.length}  FAIL ${fail}  PARTIAL ${partial}  NOT TESTED ${nt}`);
-  fs.writeFileSync('/tmp/cert-results.json', JSON.stringify(results,null,2));
-  fs.writeFileSync('docs/certification-raw.json', JSON.stringify(results,null,2));
+  fs.writeFileSync(path.join(os.tmpdir(),'cert-results.json'), JSON.stringify(results,null,2));
+  if (fail > 0) process.exitCode = 1;
+  fs.writeFileSync(rooted('docs/certification-raw.json'), JSON.stringify(results,null,2));
 }
 main().catch(e=>{ console.error(e); process.exit(1); });

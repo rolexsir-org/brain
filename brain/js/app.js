@@ -111,7 +111,11 @@ async function boot() {
         const { executePublish } = await import('./instagram/publish.js');
         return executePublish(store, draft.id, connection, { actor:'automation' });
       }});
-    } catch {}
+    } catch (error) {
+      // A failed background pass must be visible in diagnostics rather than
+      // silently disappearing.
+      console.warn('Instagram queue pass failed:', error && error.message ? error.message : error);
+    }
   }, 30000);
   // Immediate attempt for overdue queue
   try {
@@ -140,6 +144,9 @@ const blocks = [];
 function renderAll() {
   const chat = $('#chat');
   if (!chat) return;
+  // Bound both the DOM and the in-memory transcript: a long-lived session must
+  // not grow without limit on low-memory phones.
+  if (blocks.length > 400) blocks.splice(0, blocks.length - 400);
   chat.textContent = '';
   for (const block of blocks.slice(-200)) chat.append(renderBlock(block));
   autoScroll();
@@ -375,6 +382,9 @@ function wireSheet() {
     trapSheetFocus(event);
   });
   window.addEventListener('popstate', () => { if ($('#sheet').classList.contains('open')) closeSheet({ fromHistory: true }); });
+  // Panel modules live in their own files; they ask the shell to open the sheet
+  // so focus trapping, background inertness, and the history entry stay correct.
+  document.addEventListener('brain:sheet-open', () => openSheet());
 }
 function openSheet() {
   const sheet = $('#sheet');
@@ -434,9 +444,11 @@ function openMenu() {
   // Command & automation centres prominent
   body.append(E.div({ class: 'hr' }));
   const ccRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#0ea5e9;color:#fff' }, '🗂️'), E.div({ class: 'tx' }, E.b({}, 'Command Centre'), E.small({}, 'Search everything · pending actions · content calendar')));
-  ccRow.addEventListener('click', async ()=>{ closeSheet(); const mod=await import('./ui/commandCentre.js'); mod.openCommandCentre(ctx); });
+  // Open the panel while the sheet stays open: closing first would schedule a
+  // history.back() that races with the new panel and immediately closes it.
+  ccRow.addEventListener('click', async ()=>{ try { const mod=await import('./ui/commandCentre.js'); mod.openCommandCentre(ctx); } catch { toast('The Command Centre could not be opened.'); } });
   const acRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#7c3aed;color:#fff' }, '🤖'), E.div({ class: 'tx' }, E.b({}, 'Automation Centre'), E.small({}, 'Permissions · automations · approvals · failures')));
-  acRow.addEventListener('click', async ()=>{ closeSheet(); const mod=await import('./ui/automationCentre.js'); mod.openAutomationCentre(ctx); });
+  acRow.addEventListener('click', async ()=>{ try { const mod=await import('./ui/automationCentre.js'); mod.openAutomationCentre(ctx); } catch { toast('The Automation Centre could not be opened.'); } });
   body.append(ccRow, acRow);
   // Storage diagnostics quick link
   const sdRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, '💾'), E.div({ class: 'tx' }, E.b({}, 'Storage & media health'), E.small({}, 'Check storage use and media integrity')));
@@ -458,7 +470,7 @@ function openMenu() {
     E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5);color:#fff' }, '📸'),
     E.div({ class: 'tx' }, E.b({}, igLabel), E.small({}, igHint))
   );
-  igRow.addEventListener('click', () => { closeSheet(); runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } }); });
+  igRow.addEventListener('click', () => { runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } }); });
   body.append(igRow);
   body.append(E.div({ class: 'hr' }));
   const caps = getCaps();
@@ -469,7 +481,7 @@ function openMenu() {
   body.append(menuButton('💾 Back up my data', () => { closeSheet(); doExport(); }));
   body.append(menuButton('⚙️ Settings', () => openSettings()));
   body.append(menuButton('🧰 Device capabilities', () => openDiagnostics()));
-  body.append(menuButton('🔍 Diagnostics & release', async () => { closeSheet(); const mod=await import('./ui/diagnostics.js'); mod.openDiagnosticsPanel(ctx); }));
+  body.append(menuButton('🔍 Diagnostics & release', async () => { try { const mod=await import('./ui/diagnostics.js'); mod.openDiagnosticsPanel(ctx); } catch { toast('Diagnostics could not be opened.'); } }));
   body.append(menuButton('⛔ Emergency stop queue', async () => { const { setEmergencyStop } = await import('./instagram/queue.js'); setEmergencyStop(true); toast('Queue emergency-stopped. Resume in Automation Centre.'); }));
   body.append(menuButton('✨ Add sample data', () => { closeSheet(); loadDemo(); }));
   openSheet();
@@ -667,12 +679,14 @@ async function handleImport(input) {
   if (file.size > BACKUP_MAX_BYTES) { toast('That backup is too large (maximum 25 MB).'); return; }
   try {
     let raw = await textFromFile(file);
-    // Encrypted backup handling
-    if (raw.startsWith('brain-enc-v1.')) {
+    // Encrypted backup handling. Both envelope versions must be accepted: new
+    // backups are written as v2, older ones as v1. Checking only v1 made every
+    // encrypted backup created by this app impossible to restore.
+    const { isEncryptedBackup, decryptBackup } = await import('./util/crypto.js');
+    if (isEncryptedBackup(raw)) {
       const pwd = window.prompt('This backup is encrypted. Enter password:');
       if (!pwd) { toast('Restore cancelled — password required.'); return; }
       try {
-        const { decryptBackup } = await import('./util/crypto.js');
         raw = await decryptBackup(raw, pwd);
       } catch (e) { toast('Could not decrypt — wrong password or corrupt file.'); return; }
     }
@@ -1511,7 +1525,7 @@ function showBriefOnce() {
   const day = todayKey();
   if (store.settings.briefDate === day) return;
   const text = brief(store);
-  if (text) { store.updateSettings({ briefDate: day }); pushBot(text, [], { brief: true }); }
+  if (text) { store.updateSettings({ briefDate: day }).catch(() => {}); pushBot(text, [], { brief: true }); }
 }
 
 // ---------- Voice input ----------
@@ -1553,11 +1567,53 @@ function toast(message) {
   toastTimer = setTimeout(() => element.classList.remove('show'), 3600);
 }
 
+function renderFatal(error) {
+  const detail = error && error.message ? error.message : 'unknown error';
+  try {
+    document.body.textContent = '';
+    const panel = document.createElement('div');
+    panel.setAttribute('role', 'alert');
+    panel.style.cssText = 'max-width:460px;margin:12vh auto;padding:20px;font-family:system-ui,sans-serif;color:#e9edf4;background:#0e131f;border:1px solid #26304a;border-radius:14px;line-height:1.5;';
+    const title = document.createElement('h1');
+    title.textContent = 'Brain could not start';
+    title.style.cssText = 'font-size:18px;margin:0 0 8px;';
+    const body = document.createElement('p');
+    body.style.cssText = 'margin:0 0 8px;font-size:14px;color:#c8d0e0;';
+    body.textContent = 'Your saved data was not deleted. This is usually a browser storage problem (private browsing, a full disk, or a blocked database).';
+    const reason = document.createElement('p');
+    reason.style.cssText = 'margin:0 0 14px;font-size:13px;color:#ffb4b4;word-break:break-word;';
+    reason.textContent = detail;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Try again';
+    retry.style.cssText = 'background:#3ecf8e;border:none;padding:9px 16px;border-radius:8px;cursor:pointer;color:#000;font-weight:600;';
+    retry.addEventListener('click', () => window.location.reload());
+    const help = document.createElement('p');
+    help.style.cssText = 'margin:14px 0 0;font-size:12px;color:#8f9ab3;';
+    help.textContent = 'If this repeats, open Brain in a normal (non-private) window and free some device storage.';
+    panel.append(title, body, reason, retry, help);
+    document.body.append(panel);
+    retry.focus();
+  } catch {
+    document.body.textContent = `Brain could not start safely: ${detail}. Reload and try again.`;
+  }
+}
+
 function start() {
   if (!document.getElementById) return;
-  boot().catch(error => {
-    document.body.textContent = `Brain could not start safely: ${error && error.message ? error.message : 'unknown error'}. Reload and try again.`;
-  });
+  // Background failures stay visible instead of dying as unhandled rejections.
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('unhandledrejection', event => {
+      const reason = event && event.reason;
+      if (reason && (reason.name === 'AbortError' || /aborted/i.test(String(reason.message || '')))) return;
+      if (typeof console !== 'undefined' && console.error) console.error('Brain background task failed:', reason);
+      try { toast('Something went wrong in the background. Your saved data is unchanged.'); } catch {}
+    });
+    window.addEventListener('error', event => {
+      if (typeof console !== 'undefined' && console.error) console.error('Brain runtime error:', event && (event.error || event.message));
+    });
+  }
+  boot().catch(renderFatal);
 }
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

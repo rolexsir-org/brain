@@ -4,6 +4,13 @@ import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 import 'fake-indexeddb/auto';
 
+// Fail loudly instead of hanging forever if an expectation breaks mid-run.
+const watchdog = setTimeout(() => {
+  console.error('TIMEOUT: UI smoke test did not finish within 90s');
+  process.exit(1);
+}, 90_000);
+watchdog.unref?.();
+
 const html = fs.readFileSync('index.html', 'utf8');
 const dom = new JSDOM(html, { url: 'https://brain.test/', runScripts: 'outside-only', pretendToBeVisual: true });
 const { window } = dom;
@@ -13,10 +20,12 @@ window.console.error = (...args) => errors.push(args.join(' '));
 function expose(name, value) {
   try { Object.defineProperty(globalThis, name, { value, configurable: true, writable: true }); } catch {}
 }
-for (const name of ['document', 'window', 'location', 'HTMLElement', 'Node', 'NodeList', 'Event', 'CustomEvent', 'KeyboardEvent', 'MouseEvent', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'matchMedia', 'Blob', 'URL', 'FileReader', 'Text', 'File', 'Image', 'atob']) {
+for (const name of ['document', 'window', 'location', 'HTMLElement', 'Node', 'NodeList', 'Event', 'CustomEvent', 'KeyboardEvent', 'MouseEvent', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'matchMedia', 'Blob', 'URL', 'FileReader', 'Text', 'File', 'Image']) {
   if (window[name] !== undefined) expose(name, window[name]);
 }
 expose('navigator', window.navigator);
+expose('atob', value => Buffer.from(String(value), 'base64').toString('binary'));
+expose('btoa', value => Buffer.from(String(value), 'binary').toString('base64'));
 expose('localStorage', window.localStorage);
 // Keep fake-indexeddb supplied by the import above; jsdom does not expose one.
 const notification = { permission: 'denied', requestPermission: async () => 'denied' };
@@ -119,10 +128,94 @@ assert(window.document.querySelector('#sheet').getAttribute('aria-hidden') === '
 assert(!window.document.querySelector('#app').hasAttribute('aria-hidden'), 'background accessibility state is restored after closing');
 assert(window.document.querySelector('#menuBtn').getAttribute('aria-expanded') === 'false', 'menu state resets after closing');
 
+// --- Backup round-trip through the real UI (regression: encrypted v2) ---
+const { encryptBackup } = await import('../js/util/crypto.js');
+
+const nowIso = new Date().toISOString();
+const backup = {
+  app: 'brain', schema: 5, exportedAt: nowIso,
+  settings: { name: 'Aarav' },
+  collections: {
+    task: [{ id: 'restore-task-1', title: 'Restored from encrypted backup', status: 'open', priority: 1, createdAt: nowIso, updatedAt: nowIso }]
+  }
+};
+const packed = await encryptBackup(JSON.stringify(backup), 'test-passphrase', 'v2');
+window.prompt = () => 'test-passphrase';
+expose('prompt', window.prompt);
+
+window.document.querySelector('#menuBtn').click();
+await delay(30);
+[...window.document.querySelectorAll('#sheetBody button')].find(button => /Settings/.test(button.textContent)).click();
+await delay(30);
+const restoreButton = [...window.document.querySelectorAll('#sheetBody button')].find(button => /Restore from a backup/.test(button.textContent));
+assert(!!restoreButton, 'restore action is reachable from settings');
+restoreButton.click();
+await delay(20);
+const fileInputs = [...window.document.querySelectorAll('input[type="file"]')];
+const fileInput = fileInputs[fileInputs.length - 1];
+assert(fileInputs.length === 1 && !!fileInput, 'restore opens exactly one file input');
+const file = new window.File([packed], 'brain-backup.enc', { type: 'application/json' });
+Object.defineProperty(fileInput, 'files', { value: [file], configurable: true });
+fileInput.dispatchEvent(new window.Event('change', { bubbles: true }));
+await delay(500);
+const restoreTitle = window.document.querySelector('#sheetTitle').textContent;
+assert(/Restore/i.test(restoreTitle), 'encrypted v2 backup is decrypted and previewed');
+const replaceButton = [...window.document.querySelectorAll('#sheetBody button')].find(button => /Replace all data/.test(button.textContent));
+assert(!!replaceButton, 'restore preview offers replace');
+if (replaceButton) replaceButton.click();
+await delay(150);
+window.document.querySelector('#menuBtn').click();
+await delay(30);
+[...window.document.querySelectorAll('#sheetBody .srow')].find(row => /Tasks/.test(row.textContent)).click();
+await delay(60);
+assert(/Restored from encrypted backup/.test(chatText()), 'encrypted v2 backup restores records into the app');
+
+// --- Secondary panels must open without runtime errors ---
+async function openMenuItem(pattern) {
+  window.document.querySelector('#menuBtn').click();
+  await delay(30);
+  const row = [...window.document.querySelectorAll('#sheetBody button')].find(button => pattern.test(button.textContent));
+  assert(!!row, `menu row ${pattern} exists`);
+  if (!row) return false;
+  row.click();
+  await delay(80);
+  return true;
+}
+if (await openMenuItem(/Command Centre/)) {
+  assert(/Command Centre/.test(window.document.querySelector('#sheetTitle').textContent), 'command centre opens');
+  assert(window.document.querySelector('#sheet').getAttribute('aria-hidden') === 'false', 'command centre is exposed as a dialog');
+  assert(window.document.querySelector('#app').getAttribute('aria-hidden') === 'true', 'command centre hides the background from assistive technology');
+  const search = window.document.querySelector('#sheetBody input[type="search"]');
+  search.value = 'restored';
+  search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await delay(400);
+  assert(/result/i.test(window.document.querySelector('#sheetBody').textContent), 'command centre search runs');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(30);
+  assert(window.document.querySelector('#sheet').getAttribute('aria-hidden') === 'true', 'Escape closes the command centre');
+  assert(!window.document.querySelector('#app').hasAttribute('aria-hidden'), 'closing the command centre restores the background');
+}
+if (await openMenuItem(/Automation Centre/)) {
+  assert(/Automation Centre/.test(window.document.querySelector('#sheetTitle').textContent), 'automation centre opens');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(30);
+}
+if (await openMenuItem(/Diagnostics & release/)) {
+  assert(window.document.querySelector('#sheetBody').textContent.length > 50, 'diagnostics panel renders');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(30);
+}
+if (await openMenuItem(/Instagram/)) {
+  assert(/Instagram/.test(window.document.querySelector('#sheet').textContent), 'Instagram hub renders');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(30);
+}
+
 await delay(30);
 if (errors.length || unhandled.length) {
   console.error(`RUNTIME ERRORS:\n${[...errors, ...unhandled].join('\n')}`);
   process.exitCode = 1;
 }
+clearTimeout(watchdog);
 console.log('DONE');
 process.exit(process.exitCode || 0);

@@ -574,6 +574,7 @@ async function saveInstagramConnection(ctx, connection) {
 }
 
 function openSheet() {
+  try { document.dispatchEvent(new CustomEvent('brain:sheet-open')); } catch {}
   const sheet = document.getElementById('sheet');
   if (sheet) { sheet.classList.add('open'); sheet.setAttribute('aria-hidden', 'false'); }
   const btn = document.getElementById('menuBtn');

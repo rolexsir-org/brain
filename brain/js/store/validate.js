@@ -268,9 +268,15 @@ export function makeInstagramDraft(raw = {}) {
   let tempVideoUrl = null;
   const rawUrl = raw.tempVideoUrl || raw.videoUrl || raw.video_url || raw.temp_video_url || null;
   if (typeof rawUrl === 'string' && rawUrl.trim()) tempVideoUrl = rawUrl.trim().slice(0,2000);
-  // cover selection
-  const coverDataUrl = isSafeImageDataUrl(raw.coverDataUrl || raw.cover_data_url) ? String(raw.coverDataUrl || raw.cover_data_url) : (typeof raw.coverUrl === 'string' && raw.coverUrl.startsWith('data:') ? '' : cleanText(raw.coverUrl || '', 2000).trim().slice(0,2000) || null);
-  const coverUrl = coverDataUrl && coverDataUrl.startsWith('data:') ? null : (cleanText(raw.coverUrl || '', 2000).trim().slice(0,2000) || null);
+  // Cover selection: coverDataUrl is only ever a validated raster data URL;
+  // coverUrl is only ever a plain (usually https) reference. Mixing the two
+  // fields made a hosted URL masquerade as inline image data.
+  const rawCoverData = raw.coverDataUrl || raw.cover_data_url;
+  const coverDataUrl = isSafeImageDataUrl(rawCoverData) ? String(rawCoverData) : null;
+  const rawCoverUrl = typeof raw.coverUrl === 'string' ? raw.coverUrl.trim() : '';
+  const coverUrl = coverDataUrl || !rawCoverUrl || rawCoverUrl.startsWith('data:')
+    ? null
+    : cleanText(rawCoverUrl, 2000).slice(0, 2000) || null;
   // history array for durable publish tracking
   let history = [];
   if (Array.isArray(raw.history)) history = raw.history.slice(0,100).map(h=> ({

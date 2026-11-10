@@ -1,5 +1,13 @@
 # Brain v2.3.0 — Production Readiness Report
 
+> **Historical record (v2.3.0).** This report describes the 2.3.0 release.
+> The current release is 2.4.0; see
+> [`production-hardening-2.4.0.md`](./production-hardening-2.4.0.md) for the
+> defects fixed after this certification (including an unrestorable-encrypted-
+> backup bug and panels closing immediately), the hardened servers, and the
+> updated verification results. Statements below about "no blocker defects" and
+> "2 HIGH npm advisories" applied to 2.3.0 only.
+
 **Release Candidate:** v2.3.0 (schema 5) — PR #3 `arena/83d0e544-brain → main`
 **Date:** 2026-11-06 (Asia/Calcutta) — independent principal-engineer certification
 **Auditor apparatus:** Node 22.22.3, `fake-indexeddb@6.2.5`, `jsdom@29.1.1`, Chromium-equivalent JSDOM + direct source audit

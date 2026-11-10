@@ -3,7 +3,7 @@
 // it while running; it cannot wake itself at an arbitrary future time. There is
 // intentionally no fake background scheduler or push subscription here.
 
-const VERSION = 'brain-v2.3.0'; // bump on each release; old brain-* caches auto-cleaned
+const VERSION = 'brain-v2.4.0'; // bump on each release; old brain-* caches auto-cleaned
 const CACHE = VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
@@ -17,10 +17,27 @@ const ASSETS = [
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'
 ];
 
+const NAVIGATION_TIMEOUT_MS = 8000;
+
+/** Resolve with the network response, or reject once the budget is spent. */
+async function fetchWithTimeout(request, timeoutMs) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    return await fetch(request, controller ? { signal: controller.signal } : undefined);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    await cache.addAll(ASSETS);
+    // Cache each asset independently: one missing file must not leave Brain
+    // without any offline shell at all.
+    const results = await Promise.allSettled(ASSETS.map(asset => cache.add(asset)));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    if (failed) console.warn(`Brain service worker: ${failed} of ${ASSETS.length} assets failed to precache`);
     await self.skipWaiting();
   })());
 });
@@ -42,15 +59,30 @@ self.addEventListener('fetch', event => {
     const cache = await caches.open(CACHE);
     if (request.mode === 'navigate') {
       try {
-        const response = await fetch(request);
-        if (response && response.ok) cache.put(request, response.clone()).catch(() => {});
+        const response = await fetchWithTimeout(request, NAVIGATION_TIMEOUT_MS);
+        // Cache the single app shell URL rather than every query string a
+        // launch URL might carry (reminder ids, OAuth params), which would grow
+        // CacheStorage without bound.
+        if (response && response.ok) cache.put(new Request('./index.html'), response.clone()).catch(() => {});
         return response;
       } catch {
-        return (await cache.match(request)) || (await cache.match('./index.html')) || new Response('Brain is offline. Open it once while online to install the app shell.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+        return (await cache.match(request, { ignoreSearch: true }))
+          || (await cache.match('./index.html'))
+          || new Response('Brain is offline. Open it once while online to install the app shell.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
       }
     }
     const cached = await cache.match(request);
-    if (cached) return cached;
+    if (cached) {
+      // Serve immediately, then refresh in the background so a hotfix reaches
+      // installed clients without waiting for the next cache version. A rejected
+      // refresh is expected offline and must stay harmless.
+      fetch(request)
+        .then(response => {
+          if (response && response.ok && response.type === 'basic') cache.put(request, response.clone()).catch(() => {});
+        })
+        .catch(() => {});
+      return cached;
+    }
     try {
       const response = await fetch(request);
       if (response && response.ok && response.type === 'basic') cache.put(request, response.clone()).catch(() => {});

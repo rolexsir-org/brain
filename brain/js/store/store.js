@@ -226,7 +226,12 @@ export class Store {
       }
       this.schema = SCHEMA_VERSION;
       this._repairReferences();
-      await this._saveSnapshot();
+      try {
+        await this._saveSnapshot();
+      } catch (error) {
+        // Keep the session usable; the caller surfaces a persistence warning.
+        this._reportPersistenceError(new Error(`Initial save failed: ${error.message}`));
+      }
     } else if (this.schema < SCHEMA_VERSION) {
       // Migration backup & recovery: snapshot old state before migration
       try {
@@ -235,11 +240,16 @@ export class Store {
       } catch (e) {
         this.corruptionReport.issues.push(`migration backup failed: ${e.message}`);
       }
-      // Validate migration
+      // Validate migration: a collection that had records before the schema
+      // bump must not come out empty, or the user's data was dropped silently.
       const beforeCounts = this.counts();
       this.schema = SCHEMA_VERSION;
       this._repairReferences();
-      // Ensure no collection lost all records unexpectedly (unless intentional)
+      const afterCounts = this.counts();
+      const lost = Object.keys(beforeCounts).filter(key => beforeCounts[key] > 0 && afterCounts[key] === 0);
+      if (lost.length) {
+        this.corruptionReport.issues.push(`migration ${SCHEMA_VERSION - 1}->${SCHEMA_VERSION} emptied: ${lost.join(', ')} (pre-migration backup kept)`);
+      }
       try { await this._saveSnapshot(); } catch (e) {
         this._reportPersistenceError(new Error(`Migration save failed: ${e.message}. Backup key retains pre-migration data.`));
         throw e;
@@ -266,12 +276,6 @@ export class Store {
     return output;
   }
 
-  // Migration: normalize legacy lowercase IG statuses in raw storage before sanitize
-  _migrateInstagramStatuses() {
-    // No-op: sanitizeRecord already maps legacy → uppercase, but persist the normalized snapshot
-    return false;
-  }
-
   // Media integrity + storage reporting
   async mediaIntegrityReport() {
     const drafts = this.list('instagramDraft');
@@ -280,7 +284,7 @@ export class Store {
       const s = String(d.status||'DRAFT');
       report.byStatus[s] = (report.byStatus[s]||0)+1;
       if (!d.tempVideoUrl && s!=='PUBLISHED' && s!=='CANCELLED') report.missingUrl += 1;
-      if (d.igContainerId && d.igContainerId) {
+      if (d.igContainerId) {
         try { const at = d.updatedAt ? new Date(d.updatedAt).getTime() : 0; if (Date.now() - at > 24*3600*1000) report.expiredContainer+=1; } catch {}
       }
     }

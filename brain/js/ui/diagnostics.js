@@ -63,5 +63,5 @@ export async function openDiagnosticsPanel(ctx) {
   body.append(E.div({class:'hr'}), E.div({class:'note'}, 'If a new version is available, you will see an “Update available — reload” banner. Data is never silently replaced; you must confirm reload.'));
 
   openSheet();
-  function openSheet(){ const s=document.getElementById('sheet'); if(s){ s.classList.add('open'); s.setAttribute('aria-hidden','false'); } }
+  function openSheet(){ const s=document.getElementById('sheet'); if(s){ s.classList.add('open'); s.setAttribute('aria-hidden','false'); } try { document.dispatchEvent(new CustomEvent('brain:sheet-open')); } catch {} }
 }

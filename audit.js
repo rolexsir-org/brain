@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Independent acceptance audit — reproduces 7 sections
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Store } from './brain/js/store/store.js';
 import { MemoryBackend } from './brain/js/store/db.js';
 import { Brain } from './brain/js/engine/intent.js';
@@ -9,6 +12,12 @@ import { enqueue, getQueue, saveQueue, clearAllQueue, claimJob, recoverStaleJobs
 import { STATES } from './brain/js/instagram/stateMachine.js';
 import { encryptBackup, decryptBackup } from './brain/js/util/crypto.js';
 import { previewImport } from './brain/js/store/store.js';
+
+// Paths resolve against this file, not the shell's current directory, so the
+// audit behaves identically from the repo root, from brain/, or from CI.
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const rooted = rel => (path.isAbsolute(rel) ? rel : path.join(ROOT, rel));
+const read = rel => fs.readFileSync(rooted(rel), 'utf8');
 
 global.sessionStorage={_m:{}, getItem(k){return this._m[k]??null}, setItem(k,v){this._m[k]=String(v)}, removeItem(k){delete this._m[k]}, clear(){this._m={}}};
 if(typeof global.localStorage==='undefined') global.localStorage={_m:{}, getItem(k){return this._m[k]??null}, setItem(k,v){this._m[k]=String(v)}, removeItem(k){delete this._m[k]}, key(i){return Object.keys(this._m)[i]||null}, get length(){return Object.keys(this._m).length}, clear(){this._m={}}};
@@ -45,11 +54,11 @@ async function run(){
     return v==='v21.0' ? {ok:true, detail:'override '+v} : {ok:false, detail:'got '+v};
   });
   await check('1c Resumable upload documented', async()=>{
-    const doc = fs.readFileSync('docs/api-compatibility.md','utf8');
+    const doc = read('docs/api-compatibility.md');
     return doc.includes('resumable') && doc.includes('rupload') ? {ok:true} : {ok:false, detail:'missing resumable doc'};
   });
   await check('1d Token behaviour documented', async()=>{
-    const api = fs.readFileSync('brain/js/instagram/api.js','utf8');
+    const api = read('brain/js/instagram/api.js');
     return api.includes('status_code') && api.includes('FINISHED') ? {ok:true} : {ok:false};
   });
 
@@ -109,7 +118,7 @@ async function run(){
     await clearAllQueue(store);
     await enqueue(store, draft.id, { scheduledAt: new Date(Date.now()-1000).toISOString() });
     // we check code has fencing token to avoid blind repeat: publish uses leaseToken
-    const qcode=fs.readFileSync('brain/js/instagram/queue.js','utf8');
+    const qcode=read('brain/js/instagram/queue.js');
     return qcode.includes('leaseToken') && qcode.includes('fencing') ? {ok:true, detail:'fencing token present'} : {ok:false, detail:'no fencing'};
   });
   await check('2e Cancellation during upload — fencing prevents stale commit', async()=>{
@@ -124,12 +133,12 @@ async function run(){
     return after.length===0 ? {ok:true} : {ok:false, detail:`queue not empty ${after.length}`};
   });
   await check('2f Fencing token implemented', async()=>{
-    const code=fs.readFileSync('brain/js/instagram/queue.js','utf8');
+    const code=read('brain/js/instagram/queue.js');
     return code.includes('generateFencingToken') && code.includes('leaseToken') ? {ok:true} : {ok:false};
   });
   await check('2g Retry cannot blindly duplicate — classifyRetry + container check', async()=>{
-    const code=fs.readFileSync('brain/js/instagram/queue.js','utf8');
-    return code.includes('classifyRetry') && fs.readFileSync('brain/js/instagram/publish.js','utf8').includes('isContainerExpired') ? {ok:true} : {ok:false};
+    const code=read('brain/js/instagram/queue.js');
+    return code.includes('classifyRetry') && read('brain/js/instagram/publish.js').includes('isContainerExpired') ? {ok:true} : {ok:false};
   });
 
   console.log('\n=== 3. Data integrity ===');
@@ -165,7 +174,7 @@ async function run(){
     const s=await freshStore();
     const exp=await s.exportState();
     // directly set old schema to trigger migration backup logic
-    const code=fs.readFileSync('brain/js/store/store.js','utf8');
+    const code=read('brain/js/store/store.js');
     return code.includes('backup:pre-migration') && code.includes('kvSet(backupKey') ? {ok:true, detail:'migration backup code present'} : {ok:false};
   });
   await check('3e Encrypted backup restore in clean profile', async()=>{
@@ -191,11 +200,11 @@ async function run(){
   await check('4a Stored XSS escaped — caption stored but not executed', async()=>{
     const { makeInstagramDraft } = await import('./brain/js/store/validate.js');
     const d=makeInstagramDraft({videoName:'x.mp4', caption:'<img src=x onerror=alert(1)>', status:'DRAFT'});
-    const cards=fs.readFileSync('brain/js/ui/cards.js','utf8');
+    const cards=read('brain/js/ui/cards.js');
     return !cards.includes('innerHTML') || cards.includes('textContent') ? {ok:true} : {ok:false};
   });
   await check('4b DOM XSS — no innerHTML with user data', async()=>{
-    const grep=fs.readFileSync('brain/js/instagram/coverPicker.js','utf8');
+    const grep=read('brain/js/instagram/coverPicker.js');
     // allow static template innerHTML, but dynamic must use DOM APIs
     const hasDynamic = /preview\.innerHTML\s*=\s*`<img/.test(grep) || /preview\.innerHTML\s*=\s*`"/.test(grep);
     return !hasDynamic ? {ok:true, detail:'dynamic innerHTML removed'} : {ok:false, detail:'coverPicker still uses dynamic innerHTML'};
@@ -243,9 +252,9 @@ async function run(){
   });
   await check('4i No secrets in frontend assets', async()=>{
     const files=['brain/index.html','brain/js/app.js','brain/js/instagram/auth.js','brain/js/instagram/api.js'];
-    for(const f of files){ const c=fs.readFileSync(f,'utf8'); if(/APP_SECRET|FACEBOOK_APP_SECRET/.test(c) && !c.includes('only on exchange')) return {ok:false, detail: f}; }
+    for(const f of files){ const c=read(f); if(/APP_SECRET|FACEBOOK_APP_SECRET/.test(c) && !c.includes('only on exchange')) return {ok:false, detail: f}; }
     // build assets
-    const buildFiles=fs.readdirSync('brain/js').length;
+    const buildFiles=fs.readdirSync(rooted('brain/js')).length;
     return {ok:true};
   });
 
@@ -262,7 +271,7 @@ async function run(){
   });
   await check('5b Connect only sends OAuth to allowed hosts', async()=>{
     const allowed=['graph.facebook.com','facebook.com','supabase.co','amazonaws.com','r2.cloudflarestorage.com'];
-    const code=fs.readFileSync('brain/js/instagram/auth.js','utf8')+fs.readFileSync('brain/js/instagram/api.js','utf8');
+    const code=read('brain/js/instagram/auth.js')+read('brain/js/instagram/api.js');
     const fetches=[...code.matchAll(/fetch\(([^)]+)\)/g)].map(m=>m[1]).join(' ');
     return !fetches.includes('analytics') ? {ok:true} : {ok:false};
   });
@@ -274,17 +283,17 @@ async function run(){
     return !res.ok && /not connected|videoUrl/i.test(res.error) ? {ok:true} : {ok:false, detail: res.error};
   });
   await check('5d Temp media deletion after publish', async()=>{
-    const code=fs.readFileSync('brain/js/instagram/publish.js','utf8');
+    const code=read('brain/js/instagram/publish.js');
     return code.includes('tempVideoUrl: null') ? {ok:true} : {ok:false};
   });
   await check('5e No analytics/third-party', async()=>{
-    const html=fs.readFileSync('brain/index.html','utf8');
+    const html=read('brain/index.html');
     return !/google-analytics|hotjar|segment|facebook.*pixel/i.test(html) ? {ok:true} : {ok:false};
   });
 
   console.log('\n=== 6. Real browser checks (JSDOM simulated) ===');
   await check('6a Fresh install — SW precaches 41 assets', async()=>{
-    const sw=fs.readFileSync('brain/sw.js','utf8');
+    const sw=read('brain/sw.js');
     const assets=(sw.match(/'.\/js\//g)||[]).length;
     return assets>=10 ? {ok:true, detail:`assets ${assets}`} : {ok:false};
   });
@@ -293,7 +302,7 @@ async function run(){
     return s.list('task').length>0 ? {ok:true} : {ok:false};
   });
   await check('6c SW update — install banner present', async()=>{
-    const inst=fs.readFileSync('brain/js/install.js','utf8');
+    const inst=read('brain/js/install.js');
     return inst.includes('Update available') ? {ok:true} : {ok:false};
   });
   await check('6d Multiple tabs — write queue serializes', async()=>{
@@ -311,7 +320,7 @@ async function run(){
     return s.isPersistent!==undefined ? {ok:true, detail: String(s.isPersistent)} : {ok:false};
   });
   await check('6f Memory fallback warning', async()=>{
-    const code=fs.readFileSync('brain/js/app.js','utf8');
+    const code=read('brain/js/app.js');
     return code.includes('Temporary storage') && code.includes('Memory') ? {ok:true} : {ok:false};
   });
   await check('6g Backup/restore — exportState', async()=>{
@@ -325,14 +334,16 @@ async function run(){
     return !dis.accessToken && conn.accessToken ? {ok:true} : {ok:false};
   });
   await check('6i Emergency stop', async()=>{
-    const code=fs.readFileSync('brain/js/instagram/queue.js','utf8');
+    const code=read('brain/js/instagram/queue.js');
     return code.includes('EMERGENCY_STOP') && code.includes('setEmergencyStop') ? {ok:true} : {ok:false};
   });
 
   console.log('\n=== SUMMARY ===');
   const pass=results.filter(r=>r.pass).length, fail=results.filter(r=>!r.pass).length;
   console.log(`PASS ${pass}/${results.length}, FAIL ${fail}`);
-  fs.writeFileSync('/tmp/audit-results.json', JSON.stringify(results,null,2));
+  const out = process.env.BRAIN_AUDIT_OUT || path.join(os.tmpdir(), 'audit-results.json');
+  try { fs.writeFileSync(out, JSON.stringify(results,null,2)); } catch {}
+  if (fail > 0) process.exitCode = 1;
 }
 
 run();

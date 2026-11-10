@@ -1,0 +1,36 @@
+# Brain production headers — Netlify and Cloudflare Pages read this file.
+# Vercel uses vercel.json; a self-hosted deployment gets the same values from
+# server/static-server.mjs.
+#
+# If the Instagram token-exchange service lives on another origin, add that
+# origin to connect-src below (for example https://exchange.example.com),
+# otherwise the browser blocks the token exchange.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https://graph.facebook.com https://*.facebook.com https://*.supabase.co https://*.amazonaws.com https://*.r2.cloudflarestorage.com; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' https://www.facebook.com; frame-ancestors 'none'; worker-src 'self'; manifest-src 'self';
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Permissions-Policy: camera=(self), microphone=(self), geolocation=(self), payment=(), usb=(), serial=(), midi=()
+
+# The shell and the service worker must always be revalidated, or installed
+# clients can stay pinned to an old release.
+/
+  Cache-Control: no-cache, must-revalidate
+/index.html
+  Cache-Control: no-cache, must-revalidate
+/sw.js
+  Cache-Control: no-cache, must-revalidate
+/manifest.webmanifest
+  Cache-Control: no-cache, must-revalidate
+
+# Unhashed static assets: short-lived so a fix propagates quickly.
+/js/*
+  Cache-Control: public, max-age=300, must-revalidate
+/css/*
+  Cache-Control: public, max-age=300, must-revalidate
+/icons/*
+  Cache-Control: public, max-age=86400
