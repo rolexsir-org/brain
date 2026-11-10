@@ -102,7 +102,7 @@
     "name": "OAuth state single-use + format",
     "status": "PASS",
     "evidence": "first=true secondOk=false fmt=true",
-    "detail": "mwaso9dz-d457abe..."
+    "detail": "mwasppmm-18b426a..."
   },
   {
     "phase": "4",
@@ -339,7 +339,7 @@
     "phase": "9",
     "name": "Unit tests",
     "status": "PASS",
-    "evidence": "pass=197 zable\nok 196 - every collection is sanitizable\n  ---\n  duration_ms: 0.829306\n  type: 'test'\n  ...\n# Subtest: Instagram draft cover fields never masquerade as each other\nok 197 - Instagram draft cover fields never masquerade as each other\n  ---\n  duration_ms: 0.316429\n  type: 'test'\n  ...\n1..197\n# tests 197\n# suites 0\n# pass 197\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3029.182727\n",
+    "evidence": "pass=197 zable\nok 196 - every collection is sanitizable\n  ---\n  duration_ms: 0.677201\n  type: 'test'\n  ...\n# Subtest: Instagram draft cover fields never masquerade as each other\nok 197 - Instagram draft cover fields never masquerade as each other\n  ---\n  duration_ms: 0.282002\n  type: 'test'\n  ...\n1..197\n# tests 197\n# suites 0\n# pass 197\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 2778.614244\n",
     "detail": ""
   },
   {

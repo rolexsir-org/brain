@@ -192,7 +192,7 @@ test('traversal variants are refused in raw and encoded form', async () => {
 
 test('directories and internal trees are not served as documents', async () => {
   await withServer(async base => {
-    for (const urlPath of ['/js', '/js/', '/css', '/icons', '/server', '/test', '/node_modules', '/docs']) {
+    for (const urlPath of ['/js', '/js/', '/css', '/icons', '/server', '/test', '/node_modules', '/docs', '/.env', '/.git/config', '/js/.hidden']) {
       assert.equal(await statusFor(base, urlPath), 404, `${urlPath} must not fall back to the shell`);
     }
     assert.equal(await statusFor(base, '/auth/instagram/callback'), 200, 'real deep links still serve the shell');

@@ -96,7 +96,11 @@ const RESERVED_SEGMENTS = new Set(['server', 'test', 'node_modules', 'docs', 'sc
 function isFilesystemPath(urlPath) {
   const clean = String(urlPath || '/');
   if (clean.endsWith('/') && clean !== '/') return true;
-  const first = clean.split('/').filter(Boolean)[0] || '';
+  const segments = clean.split('/').filter(Boolean);
+  // Dotfiles are never routes: `/.env` has no extension, so without this it
+  // would fall back to the shell and look like a served file.
+  if (segments.some(segment => segment.startsWith('.'))) return true;
+  const first = segments[0] || '';
   return PUBLIC_DIRS.has(first) || PUBLIC_FILES.has(first) || RESERVED_SEGMENTS.has(first);
 }
 
