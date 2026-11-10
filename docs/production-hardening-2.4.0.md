@@ -33,6 +33,10 @@ no record is migrated, and no telemetry is added.
 | 17 | Medium | `js/actions/external.js` | WhatsApp links for numbers stored with a national trunk zero produced unreachable numbers (`09876500011` + `91` → `9109876500011`). | Strip leading zeros before applying the country code. | `test/external.test.js` |
 | 18 | Low | `js/store/validate.js` | An Instagram draft's `coverUrl` (hosted URL) was copied into `coverDataUrl` (inline image field), and a `data:text/html` cover survived as `coverUrl`. | `coverDataUrl` now only ever holds a validated raster data URL; `coverUrl` only ever holds a non-data URL. | `test/validate.test.js` |
 | 19 | Low | release process | Nothing verified that `package.json`, `constants.VERSION`, and the service-worker cache name agree, or that every precached asset exists. | `test/release.test.js` gates version coherence, manifest/icons, CSP, precache existence, secret scan, deploy headers, docs. | `npm test` |
+| 20 | **High (filesystem escape)** | `server/static-server.mjs` | Path containment was lexical only (`normalize` + `startsWith`). A symlink inside `js/` pointing at `../package.json` or `../../` served files outside the public surface — proven with a live probe returning HTTP 200 and `package.json` contents. Directory-style paths (`/js`, `/server`) also fell back to the app shell. | `canonicalPublicFile()` now `realpath`s the target, requires it to stay under the canonical root, re-applies the public allowlist to the resolved path, and rejects non-files/failed reads as `404`; the shell fallback skips filesystem paths. In-tree symlinks still work. | `test/server.test.js`: escape links (`../package.json`, `../server/*`, `../../../audit.js`, broken, symlinked dirs) → 404, in-tree link → 200, traversal matrix, directory paths, `canonicalPublicFile()` unit checks |
+| 21 | **High (rate-limit bypass)** | `server/instagram-exchange.js` | `clientKey()` trusted `CF-Connecting-IP`, then `X-Forwarded-For`, then `X-Real-IP` with no proxy gate. On a direct Node deployment any client could rotate those headers and get unlimited exchange/refresh attempts. | Identity is now the socket `remoteAddress` by default; forwarding headers are read only for an explicitly configured `TRUST_PROXY` (`cloudflare` / `forwarded` / `vercel` / `netlify`) or a real Cloudflare runtime (`request.cf`). Values are validated as IPs and fall back to the socket; with no trustworthy source at all the limit uses one shared bucket (stricter, never bypassable). | `test/exchange.test.js`: forged headers on a direct deployment → `429`, invalid trusted header falls back to the socket, `TRUST_PROXY` per-client buckets, Cloudflare marker, serverless shared bucket, and an end-to-end HTTP test through `createNodeServer` |
+| 22 | Medium (weak backup crypto) | `js/util/crypto.js`, `js/app.js` | Encrypted backups accepted a 4-character passphrase, and the UI prompt gave no guidance, so a backup protecting a user's whole dataset could be trivially brute-forced. | `MIN_PASSPHRASE_LENGTH = 12` enforced in `encryptBackup()` and pre-checked in the export prompt with an explicit message. Decryption and `deriveKey()` deliberately keep **no** length rule, so existing v1/v2 backups — including ones written with 4–8 character passphrases — still open. Storage format, salt/IV sizes and PBKDF2 iterations are unchanged. | `test/crypto.test.js` (7 cases) plus a live drill restoring a v2 backup into a clean profile and a 5-character legacy v1 backup |
+| 23 | Low | `scripts/ui-smoke.mjs`, `test/release.test.js` | Panel Back-navigation was unverified, and the release secret scan walked symlinks (a stale probe link made `npm test` fail on a file that is not shipped). | Smoke test now asserts one history entry per open, `popstate` closing the panel and restoring the background; the scan skips symlinks. | `npm test` |
 
 Also fixed along the way: `mediaIntegrityReport` had a duplicated condition, and
 the service worker no longer risks a `waitUntil` call after its dispatch window.
@@ -51,9 +55,11 @@ Permissions-Policy; gzips text assets; implements ETag/`304`; sets
 `no-cache` on the shell and worker; exposes `/healthz`; handles `HEAD` and
 `405`; shuts down gracefully.
 
-Verified by `test/server.test.js` (10 cases), including a traversal matrix and a
+Verified by `test/server.test.js` (14 cases), including a traversal matrix, a
 regression for a relative-path bug (`/` resolved against cwd instead of the
-module root).
+module root), and the symlink-containment suite: every candidate path is
+`realpath`ed and re-checked against the canonical root, so links cannot escape
+`js/`, `css/` or `icons/`.
 
 ### Deploy-time headers
 
@@ -76,7 +82,7 @@ operational limits.
 
 ```
 cd brain && npm ci
-npm test                      # 178 tests pass, 0 fail + 44 UI smoke checks
+npm test                      # 197 tests pass, 0 fail + 48 UI smoke checks
 npm run build                 # Production app shell verified (41 required assets)
 npm audit                     # found 0 vulnerabilities
 cd .. && node audit.js        # PASS 40/40, FAIL 0
@@ -106,10 +112,17 @@ release, so installed clients fetch the corrected modules instead of serving
 - **Rate limiting is per process.** On Cloudflare Workers or Lambda each isolate
   has its own bucket, so it is an abuse brake, not a global quota. Put a WAF or
   platform rate limit in front for hard guarantees.
+- **Rate-limit identity needs a trust decision.** Behind a proxy you must set
+  `TRUST_PROXY` (see `docs/deployment.md`) or every visitor shares one bucket.
+  Leaving it unset is the safe default: forged forwarding headers then have no
+  effect, but a proxy deployment will limit more aggressively than intended.
 - **CSP is duplicated** in `index.html` and the header configs. A browser
   enforces the intersection, so all copies must be updated together when adding
   an origin; `test/release.test.js` checks the header files still carry the
   security directives but cannot infer your exchange host.
+- **Existing short passphrases still work.** The 12-character minimum applies to
+  newly created backups only; decrypting an older backup keeps accepting the
+  passphrase it was created with.
 - **`ALLOWED_REDIRECT_URI` is now mandatory** for `/exchange`. Deployments that
   previously omitted it will get `500 service_misconfigured` until it is set —
   intentional, because the alternative is accepting any redirect URI.

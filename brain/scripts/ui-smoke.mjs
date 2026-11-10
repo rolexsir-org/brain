@@ -211,6 +211,25 @@ if (await openMenuItem(/Instagram/)) {
   await delay(30);
 }
 
+// Browser Back must close the panel, and each open must add exactly one history
+// entry (no stacked duplicates).
+const pushes = [];
+const realPush = window.history.pushState.bind(window.history);
+window.history.pushState = (...args) => { pushes.push(args[1] && args[1].brainSheet); return realPush(...args); };
+if (await openMenuItem(/Command Centre/)) {
+  assert(pushes.filter(Boolean).length === 1, 'opening a panel adds exactly one history entry');
+  window.dispatchEvent(new window.Event('popstate'));
+  await delay(50);
+  assert(window.document.querySelector('#sheet').getAttribute('aria-hidden') === 'true', 'browser Back closes the panel');
+  assert(!window.document.querySelector('#app').hasAttribute('aria-hidden'), 'browser Back restores the background');
+}
+if (await openMenuItem(/Automation Centre/)) {
+  assert(pushes.filter(Boolean).length === 2, 'reopening a panel adds one entry, not a duplicate');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(50);
+}
+window.history.pushState = realPush;
+
 await delay(30);
 if (errors.length || unhandled.length) {
   console.error(`RUNTIME ERRORS:\n${[...errors, ...unhandled].join('\n')}`);

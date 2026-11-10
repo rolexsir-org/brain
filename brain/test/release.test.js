@@ -65,8 +65,10 @@ test('no App Secret or token material is present in shipped assets', () => {
   const walk = dir => {
     for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
       const rel = `${dir}/${entry.name}`;
+      // Symlinks are not shipped assets: they are not part of a deploy and a
+      // dangling one has no content to scan.
       if (entry.isDirectory()) walk(rel);
-      else if (/\.(js|css|html|webmanifest)$/.test(entry.name)) candidates.push(rel);
+      else if (!entry.isSymbolicLink() && /\.(js|css|html|webmanifest)$/.test(entry.name)) candidates.push(rel);
     }
   };
   walk('js');

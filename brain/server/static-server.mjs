@@ -18,6 +18,15 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Canonical root, resolved once. A deployment directory may itself be a
+// symlink (for example /app -> /srv/brain), so containment is always checked
+// against the real path rather than the configured one.
+let realRootCache = null;
+function realRoot() {
+  if (realRootCache) return realRootCache;
+  try { realRootCache = fs.realpathSync(ROOT); } catch { realRootCache = ROOT; }
+  return realRootCache;
+}
 const PUBLIC_DIRS = new Set(['css', 'js', 'icons']);
 const PUBLIC_FILES = new Set(['index.html', 'manifest.webmanifest', 'sw.js', 'favicon.ico']);
 const MIME = new Map(Object.entries({
@@ -79,6 +88,18 @@ export function securityHeaders(publicOrigin = '') {
   };
 }
 
+// Paths that describe the deployed tree rather than an app route. They must
+// 404 instead of falling back to the shell, so a directory can never be served
+// as a document and internal names cannot be probed through the rewrite.
+const RESERVED_SEGMENTS = new Set(['server', 'test', 'node_modules', 'docs', 'scripts', 'package.json']);
+
+function isFilesystemPath(urlPath) {
+  const clean = String(urlPath || '/');
+  if (clean.endsWith('/') && clean !== '/') return true;
+  const first = clean.split('/').filter(Boolean)[0] || '';
+  return PUBLIC_DIRS.has(first) || PUBLIC_FILES.has(first) || RESERVED_SEGMENTS.has(first);
+}
+
 function cacheControl(relativePath) {
   if (relativePath === 'sw.js' || relativePath === 'index.html' || relativePath === 'manifest.webmanifest') {
     // Never let a browser or CDN pin the shell or the worker: that would strand
@@ -115,14 +136,52 @@ export function resolvePublicPath(urlPath) {
   return { file: absolute, relativePath: relative };
 }
 
+/**
+ * Resolve a candidate file to its canonical path and prove that it is still a
+ * regular file inside the public surface.
+ *
+ * `resolvePublicPath` is a lexical check on the URL; it cannot see symlinks. A
+ * link inside js/ pointing at ../package.json or outside the deployment would
+ * otherwise be read and served. realpath() collapses every link, and the final
+ * path is re-validated against the canonical root plus the same public
+ * allowlist. Ordinary in-tree symlinks (js/x.js -> js/app.js) still work.
+ *
+ * Returns null for anything that escapes, is missing, is a directory, or cannot
+ * be resolved.
+ */
+export async function canonicalPublicFile(file) {
+  if (typeof file !== 'string' || !file) return null;
+  let real;
+  try { real = await fsp.realpath(file); } catch { return null; }
+  const root = realRoot();
+  const relative = path.relative(root, real);
+  if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) return null;
+  const segments = relative.split(path.sep);
+  if (segments.some(segment => !segment || segment.startsWith('.'))) return null;
+  const allowed = segments.length === 1
+    ? PUBLIC_FILES.has(relative)
+    : PUBLIC_DIRS.has(segments[0]);
+  if (!allowed) return null;
+  let stat;
+  try { stat = await fsp.stat(real); } catch { return null; }
+  if (!stat.isFile()) return null;
+  return { file: real, relativePath: relative.split(path.sep).join('/'), stat };
+}
+
 function etagFor(stat) {
   return `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
 }
 
 async function sendFile(req, res, target, headers) {
-  let stat;
-  try { stat = await fsp.stat(target.file); } catch { return sendStatus(res, 404, headers); }
-  if (!stat.isFile()) return sendStatus(res, 404, headers);
+  // Canonicalise before touching the file: this is the containment boundary.
+  const canonical = await canonicalPublicFile(target.file);
+  if (!canonical) return sendStatus(res, 404, headers);
+  const { stat } = canonical;
+  if (target.relativePath !== canonical.relativePath) {
+    // A symlink resolved to a different public path; cache and MIME decisions
+    // must describe the file actually being served.
+    target = { file: canonical.file, relativePath: canonical.relativePath };
+  }
   const etag = etagFor(stat);
   const baseHeaders = {
     ...headers,
@@ -143,7 +202,9 @@ async function sendFile(req, res, target, headers) {
     res.end();
     return;
   }
-  const body = await fsp.readFile(target.file);
+  let body;
+  try { body = await fsp.readFile(target.file); }
+  catch { return sendStatus(res, 404, headers); }
   if (supportsGzip && compressible) {
     const compressed = zlib.gzipSync(body);
     res.writeHead(200, { ...baseHeaders, 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length), Vary: 'Accept-Encoding' });
@@ -183,7 +244,7 @@ export function createServer({ publicOrigin = process.env.BRAIN_PUBLIC_ORIGIN ||
       // A navigation deep-link (for example /auth/instagram/callback) serves the
       // app shell; the client parses the query string and cleans the URL.
       const target = resolvePublicPath(url.pathname) || (
-        !path.posix.extname(url.pathname) ? resolvePublicPath('/index.html') : null
+        !path.posix.extname(url.pathname) && !isFilesystemPath(url.pathname) ? resolvePublicPath('/index.html') : null
       );
       if (!target) return sendStatus(res, 404, headers);
       await sendFile(req, res, target, headers);
@@ -216,4 +277,4 @@ if (isMain) {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-export const __test = { resolvePublicPath, cacheControl, MIME, PUBLIC_FILES, PUBLIC_DIRS };
+export const __test = { resolvePublicPath, canonicalPublicFile, realRoot, isFilesystemPath, cacheControl, MIME, PUBLIC_FILES, PUBLIC_DIRS };

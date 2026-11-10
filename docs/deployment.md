@@ -95,7 +95,28 @@ node server/instagram-exchange.js
 | `ALLOWED_ORIGINS` | strongly recommended | exact browser origin(s), comma-separated. With none set, browsers cannot call the service cross-origin |
 | `GRAPH_VERSION` | no | defaults to `v26.0` |
 | `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` | no | per-IP budget, default 30 requests / 60 s |
+| `TRUST_PROXY` | depends on host | `cloudflare`, `forwarded`, `vercel`, or `netlify`. Unset means the client is identified by the TCP socket address, and `CF-Connecting-IP`/`X-Forwarded-For`/`X-Real-IP` are ignored |
 | `UPSTREAM_TIMEOUT_MS` | no | Meta timeout, default 10 s |
+
+**Client identity for rate limiting.** The limiter must know who a request
+belongs to, and every forwarding header is client-controlled unless a proxy you
+operate overwrites it. So the default is the socket address:
+
+- **Cloudflare Workers/Pages Functions:** nothing to set. The runtime exposes
+  `request.cf`, and in that runtime `CF-Connecting-IP` is written by the edge.
+- **Node/VPS directly exposed (`server/instagram-exchange.js` adapter):** nothing
+  to set. The socket address is used; forged headers cannot create new buckets.
+- **Node behind nginx/HAProxy/ALB that you control:** set `TRUST_PROXY=forwarded`
+  and make the proxy *overwrite* `X-Forwarded-For` (nginx:
+  `proxy_set_header X-Forwarded-For $remote_addr;`), never append blindly.
+- **Vercel:** `TRUST_PROXY=vercel`. **Netlify:** `TRUST_PROXY=netlify`.
+- **Something else (Lambda, Deno, Bun) without a socket:** leave it unset; every
+  request shares one bucket, which is stricter than per-IP but cannot be dodged
+  by sending headers.
+
+A malformed value in a trusted header falls back to the socket rather than to a
+shared bucket, so a garbage header cannot pin traffic onto another client's
+budget.
 
 Behaviour worth knowing:
 

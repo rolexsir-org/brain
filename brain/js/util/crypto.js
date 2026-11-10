@@ -1,12 +1,20 @@
 // Encryption helpers for backup — uses Web Crypto where available
 // Versioned: brain-enc-v1 used 120k, v2 uses 600k (OWASP ref). Both decryptable.
 
+// Minimum passphrase length for NEW encrypted backups. Existing backups are
+// unaffected: decryption deliberately has no length requirement, because those
+// files were created under the old rule (and before it, the only rule was a
+// non-empty password).
+export const MIN_PASSPHRASE_LENGTH = 12;
+
 const PBKDF2_ITERATIONS_V1 = 120000;
 const PBKDF2_ITERATIONS_V2 = 600000; // OWASP 2023 reference for PBKDF2-HMAC-SHA256
 
 export async function deriveKey(password, salt, iterations = PBKDF2_ITERATIONS_V2) {
   const enc = new TextEncoder();
-  if (!password || String(password).length < 4) throw new Error('Passphrase too short (min 4 chars)');
+  // No length rule here: this is the shared path for decrypting existing
+  // backups, which may have been created with a shorter passphrase.
+  if (!password) throw new Error('Password required');
   const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: typeof salt === 'string' ? new TextEncoder().encode(salt) : salt, iterations, hash: 'SHA-256' },
@@ -20,8 +28,11 @@ export const ITERATIONS_V1 = PBKDF2_ITERATIONS_V1;
 export const ITERATIONS_V2 = PBKDF2_ITERATIONS_V2;
 
 export async function encryptBackup(jsonText, password, version='v2') {
-  if (!crypto || !crypto.subtle || !password) throw new Error('Encryption unavailable or empty password');
-  if (String(password).length < 4) throw new Error('Passphrase too short');
+  if (!crypto || !crypto.subtle) throw new Error('Encryption unavailable');
+  if (!password) throw new Error('Password required');
+  if ([...String(password)].length < MIN_PASSPHRASE_LENGTH) {
+    throw new Error(`Passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters`);
+  }
   const enc = new TextEncoder();
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));

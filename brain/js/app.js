@@ -622,11 +622,16 @@ function openDiagnostics() {
 // ---------- Backup, restore, sample data ----------
 async function doExport() {
   try {
-    const encrypt = window.confirm('Encrypt this backup with a password? (OK = encrypted, Cancel = plain JSON)');
+    const encrypt = window.confirm('Encrypt this backup with a password? (OK = encrypted, Cancel = plain JSON, which anyone with the file can read — including any connected Instagram token)');
     let blobText, filename;
     if (encrypt) {
-      const pwd = window.prompt('Enter password for encrypted backup (remember it!):');
+      const { MIN_PASSPHRASE_LENGTH } = await import('./util/crypto.js');
+      const pwd = window.prompt(`Choose a password for this backup (at least ${MIN_PASSPHRASE_LENGTH} characters). It cannot be recovered if you forget it:`);
       if (!pwd) { toast('Encryption cancelled — plain backup will be created.'); }
+      else if ([...pwd].length < MIN_PASSPHRASE_LENGTH) {
+        toast(`Backup not created — the password must be at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+        return;
+      }
       else {
         const res = await store.exportStateEncrypted(pwd);
         blobText = res.blobText;

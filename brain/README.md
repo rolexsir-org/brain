@@ -209,11 +209,14 @@ Open **Settings** to back up or restore Brain.
 
 - **Back up:** creates a JSON snapshot and asks the browser to save it. Keep the
   file somewhere you control; it can contain all of your stored personal data,
-  including photo data.
+  including photo data. Choose encryption if the file will leave your device:
+  a plain backup is readable by anyone who obtains it.
 - **Restore:** select a Brain backup (maximum 25 MB), plain JSON or encrypted
   (`brain-enc-v1`/`v2`). Encrypted files ask for their passphrase and are
   decrypted locally; Brain previews validated contents before changing current
   data. Encryption uses AES-GCM with a PBKDF2-SHA256 key (600k iterations).
+  New encrypted backups require a passphrase of **at least 12 characters**;
+  older backups still open with whatever passphrase they were created with.
 - **Merge:** keeps existing records and adds non-duplicate validated records.
   It recognizes matching IDs and equivalent content where possible.
 - **Replace all:** after confirmation, replaces current local data with only

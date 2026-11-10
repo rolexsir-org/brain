@@ -1,7 +1,9 @@
 // Production static server tests: public-surface allowlisting, headers, cache
 // policy, compression, conditional requests, and method handling.
 import test from 'node:test';
+import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { createServer, contentSecurityPolicy, resolvePublicPath, __test } from '../server/static-server.mjs';
 
@@ -120,4 +122,91 @@ test('CSP builder tolerates malformed origins', () => {
   assert.doesNotMatch(contentSecurityPolicy('not a url'), /not a url/);
   assert.equal(__test.PUBLIC_FILES.has('sw.js'), true);
   assert.equal(__test.PUBLIC_DIRS.has('js'), true);
+});
+
+// ── Filesystem containment (symlinks and traversal) ──────────────────────────
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const created = [];
+
+function link(name, target) {
+  const file = path.join(ROOT, 'js', name);
+  try { fs.unlinkSync(file); } catch {}
+  fs.symlinkSync(target, file);
+  created.push(file);
+  return file;
+}
+
+function cleanup() {
+  for (const file of created.splice(0)) { try { fs.unlinkSync(file); } catch {} }
+}
+
+async function statusFor(base, urlPath) {
+  const response = await fetch(`${base}${urlPath}`);
+  await response.arrayBuffer().catch(() => {});
+  return response.status;
+}
+
+test('symlinks that escape the public surface are refused', async () => {
+  // Each target is a real, readable file that must never be served.
+  link('probe-package.js', '../package.json');
+  link('probe-server.js', '../server/instagram-exchange.js');
+  link('probe-outside.js', '../../../audit.js');
+  link('probe-missing.js', '../does-not-exist.js');
+  const outDir = path.join(ROOT, 'js', 'probe-out-dir');
+  try { fs.unlinkSync(outDir); } catch {}
+  fs.symlinkSync('../server', outDir); // escapes into server/
+  created.push(outDir);
+  const inDir = path.join(ROOT, 'js', 'probe-in-dir');
+  try { fs.unlinkSync(inDir); } catch {}
+  fs.symlinkSync('.', inDir); // stays inside js/
+  created.push(inDir);
+  try {
+    await withServer(async base => {
+      assert.equal(await statusFor(base, '/js/probe-package.js'), 404, 'package.json must not be reachable');
+      assert.equal(await statusFor(base, '/js/probe-server.js'), 404, 'server code must not be reachable');
+      assert.equal(await statusFor(base, '/js/probe-outside.js'), 404, 'files outside the deployment must not be reachable');
+      assert.equal(await statusFor(base, '/js/probe-missing.js'), 404, 'broken symlink is a 404');
+      assert.equal(await statusFor(base, '/js/probe-out-dir/instagram-exchange.js'), 404, 'symlinked directories must not escape');
+      assert.equal(await statusFor(base, '/js/probe-in-dir/app.js'), 200, 'a symlink that resolves inside the public dir still works');
+      assert.equal(await statusFor(base, '/js/app.js'), 200, 'normal assets are unaffected');
+    });
+  } finally { cleanup(); }
+});
+
+test('traversal variants are refused in raw and encoded form', async () => {
+  await withServer(async base => {
+    for (const urlPath of [
+      '/../package.json',
+      '/js/../../package.json',
+      '/js/%2e%2e/package.json',
+      '/js/%2e%2e%2fpackage.json',
+      '/%2e%2e%2f%2e%2e%2faudit.js',
+      '/js/app.js%00.png',
+      '/js/%c0%ae%c0%ae/package.json'
+    ]) {
+      const status = await statusFor(base, urlPath);
+      assert.ok(status === 404 || status === 400, `${urlPath} returned ${status}`);
+    }
+  });
+});
+
+test('directories and internal trees are not served as documents', async () => {
+  await withServer(async base => {
+    for (const urlPath of ['/js', '/js/', '/css', '/icons', '/server', '/test', '/node_modules', '/docs']) {
+      assert.equal(await statusFor(base, urlPath), 404, `${urlPath} must not fall back to the shell`);
+    }
+    assert.equal(await statusFor(base, '/auth/instagram/callback'), 200, 'real deep links still serve the shell');
+    assert.equal(await statusFor(base, '/'), 200);
+  });
+});
+
+test('canonicalPublicFile rejects escapes and accepts public files', async () => {
+  const { canonicalPublicFile } = await import('../server/static-server.mjs');
+  assert.equal(await canonicalPublicFile(path.join(ROOT, 'package.json')), null);
+  assert.equal(await canonicalPublicFile(path.join(ROOT, '..', 'audit.js')), null);
+  assert.equal(await canonicalPublicFile(path.join(ROOT, 'js')), null, 'directories are not files');
+  assert.equal(await canonicalPublicFile(path.join(ROOT, 'js', 'nope.js')), null);
+  const app = await canonicalPublicFile(path.join(ROOT, 'js', 'app.js'));
+  assert.ok(app && app.relativePath === 'js/app.js');
+  assert.ok(app.stat.isFile());
 });

@@ -396,8 +396,8 @@ async function runPhase5(){
     const s=await freshStore(); const exp=await s.exportState();
     const json=JSON.stringify(exp);
     let count=0; const orig=global.fetch; global.fetch=(...a)=>{ count++; return Promise.reject('no'); };
-    const enc=await encryptBackup(json,'testpass');
-    const dec=await decryptBackup(enc,'testpass');
+    const enc=await encryptBackup(json,'cert-passphrase-1');
+    const dec=await decryptBackup(enc,'cert-passphrase-1');
     JSON.parse(dec);
     global.fetch=orig;
     record('5','Backup export/import zero fetch', count===0?'PASS':'FAIL', `fetchCalled=${count}`);
@@ -446,10 +446,10 @@ async function runPhase6(){
   } catch(e){ record('6','Memory flag','FAIL','',''+e.message); }
   try {
     const json=JSON.stringify({app:'brain', schema:5, collections:{task:[{id:'t1', title:'hi'}]}});
-    const enc=await encryptBackup(json,'pass123');
-    const dec=await decryptBackup(enc,'pass123');
-    const encV1=await encryptBackup(json,'pass123','v1');
-    const decV1=await decryptBackup(encV1,'pass123');
+    const enc=await encryptBackup(json,'cert-passphrase-1');
+    const dec=await decryptBackup(enc,'cert-passphrase-1');
+    const encV1=await encryptBackup(json,'cert-passphrase-1','v1');
+    const decV1=await decryptBackup(encV1,'cert-passphrase-1');
     record('6','Encrypted v2 + v1 roundtrip', dec===json && decV1===json?'PASS':'FAIL', `v2=${dec===json} v1=${decV1===json} len=${enc.length}`);
   } catch(e){ record('6','Encrypted backup','FAIL','',''+e.message); }
   try {
@@ -478,8 +478,8 @@ async function runPhase6(){
   try {
     // fresh profile restore
     const s=await freshStore(); s.addSync('task',{title:'secret'}); await s.flush();
-    const exp=await s.exportState(); const json=JSON.stringify(exp); const enc=await encryptBackup(json,'testpass123');
-    const dec=await decryptBackup(enc,'testpass123'); const parsed=JSON.parse(dec);
+    const exp=await s.exportState(); const json=JSON.stringify(exp); const enc=await encryptBackup(json,'cert-passphrase-123');
+    const dec=await decryptBackup(enc,'cert-passphrase-123'); const parsed=JSON.parse(dec);
     MemoryBackend._m={}; for(const k of Object.keys(global.localStorage._m)) delete global.localStorage._m[k];
     const s2=new Store(); await s2.init();
     // use replace path

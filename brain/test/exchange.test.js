@@ -2,7 +2,7 @@
 // handler with an injected fetch so no network or Meta credentials are needed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleRequest, __test } from '../server/instagram-exchange.js';
+import { handleRequest, createNodeServer, __test } from '../server/instagram-exchange.js';
 
 const APP = 'app-123';
 const SECRET = 'super-secret-value';
@@ -241,4 +241,139 @@ test('deployment prefixes are supported and parsers agree', () => {
   assert.equal(__test.matchRoute('/api/instagram/nope'), null);
   assert.equal(__test.matchRoute('/'), null);
   assert.deepEqual(__test.splitList(' a , b,,'), ['a', 'b']);
+});
+
+// ── Rate-limit identity ──────────────────────────────────────────────────────
+
+const identityBuckets = new Map();
+function limitedRequest(path, { headers = {}, remoteAddress } = {}) {
+  return handleRequest(
+    request(path, { body: { access_token: 'token' }, headers }),
+    env({ __rateBuckets: identityBuckets, RATE_LIMIT_MAX: '2' }),
+    { fetchImpl: tokenFetch(), remoteAddress }
+  );
+}
+
+test('forged forwarding headers cannot bypass the limit on a direct deployment', async () => {
+  const statuses = [];
+  for (let index = 0; index < 5; index += 1) {
+    const response = await limitedRequest('/exchange/refresh', {
+      // A direct connection to Node: the socket is the only trustworthy identity.
+      remoteAddress: '198.51.100.7',
+      headers: {
+        'X-Forwarded-For': `203.0.113.${index}`,
+        'CF-Connecting-IP': `203.0.113.${index}`,
+        'X-Real-IP': `203.0.113.${index}`
+      }
+    });
+    statuses.push(response.status);
+  }
+  assert.deepEqual(statuses, [200, 200, 429, 429, 429]);
+});
+
+test('an invalid trusted header falls back to the socket instead of a shared or fake key', async () => {
+  const first = await limitedRequest('/exchange/refresh', {
+    remoteAddress: '198.51.100.8',
+    headers: { 'X-Forwarded-For': 'not-an-ip' }
+  });
+  const second = await limitedRequest('/exchange/refresh', {
+    remoteAddress: '198.51.100.8',
+    headers: { 'X-Forwarded-For': 'also-not-an-ip' }
+  });
+  const third = await limitedRequest('/exchange/refresh', {
+    remoteAddress: '198.51.100.8',
+    headers: { 'X-Forwarded-For': '203.0.113.99' }
+  });
+  assert.deepEqual([first.status, second.status, third.status], [200, 200, 429]);
+});
+
+test('TRUST_PROXY=forwarded opts into per-client buckets behind a trusted proxy', async () => {
+  const buckets = new Map();
+  const call = async xff => handleRequest(
+    request('/exchange/refresh', { body: { access_token: 'token' }, headers: { 'X-Forwarded-For': xff } }),
+    env({ __rateBuckets: buckets, RATE_LIMIT_MAX: '1', TRUST_PROXY: 'forwarded' }),
+    { fetchImpl: tokenFetch(), remoteAddress: '10.0.0.1' }
+  );
+  assert.equal((await call('203.0.113.10')).status, 200);
+  assert.equal((await call('203.0.113.10')).status, 429, 'same client is limited');
+  assert.equal((await call('203.0.113.11')).status, 200, 'a different client has its own bucket');
+});
+
+test('TRUST_PROXY=cloudflare uses the edge-provided client address', async () => {
+  const buckets = new Map();
+  const call = async ip => handleRequest(
+    request('/exchange/refresh', { body: { access_token: 'token' }, headers: { 'CF-Connecting-IP': ip, 'X-Forwarded-For': 'spoofed' } }),
+    env({ __rateBuckets: buckets, RATE_LIMIT_MAX: '1', TRUST_PROXY: 'cloudflare' }),
+    { fetchImpl: tokenFetch() }
+  );
+  assert.equal((await call('203.0.113.20')).status, 200);
+  assert.equal((await call('203.0.113.20')).status, 429);
+  assert.equal((await call('203.0.113.21')).status, 200);
+});
+
+test('Cloudflare runtime marker is trusted without configuration', async () => {
+  const buckets = new Map();
+  const call = async ip => {
+    const req = request('/exchange/refresh', { body: { access_token: 'token' }, headers: { 'CF-Connecting-IP': ip } });
+    Object.defineProperty(req, 'cf', { value: { colo: 'SIN' }, configurable: true });
+    return handleRequest(req, env({ __rateBuckets: buckets, RATE_LIMIT_MAX: '1' }), { fetchImpl: tokenFetch() });
+  };
+  assert.equal((await call('203.0.113.30')).status, 200);
+  assert.equal((await call('203.0.113.30')).status, 429);
+  assert.equal((await call('203.0.113.31')).status, 200);
+});
+
+test('serverless without a socket shares one fail-safe bucket', async () => {
+  const buckets = new Map();
+  const call = async () => handleRequest(
+    request('/exchange/refresh', { body: { access_token: 'token' }, headers: { 'X-Forwarded-For': '203.0.113.40' } }),
+    env({ __rateBuckets: buckets, RATE_LIMIT_MAX: '1' }),
+    { fetchImpl: tokenFetch() }
+  );
+  assert.equal((await call()).status, 200);
+  assert.equal((await call()).status, 429, 'forwarding headers are ignored without an explicit trust decision');
+});
+
+test('the Node adapter ignores forged headers end to end', async () => {
+  const server = await createNodeServer(env({ RATE_LIMIT_MAX: '2' }), { fetchImpl: tokenFetch() });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const statuses = [];
+    for (let index = 0; index < 4; index += 1) {
+      const response = await fetch(`http://127.0.0.1:${port}/exchange/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `203.0.113.${50 + index}`,
+          'CF-Connecting-IP': `203.0.113.${50 + index}`,
+          'X-Real-IP': `203.0.113.${50 + index}`
+        },
+        body: JSON.stringify({ access_token: 'token' })
+      });
+      await response.text();
+      statuses.push(response.status);
+    }
+    assert.deepEqual(statuses, [200, 200, 429, 429]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('address normalisation rejects junk and strips ports/brackets', () => {
+  assert.equal(__test.normalizeClientIp('203.0.113.5'), '203.0.113.5');
+  assert.equal(__test.normalizeClientIp('203.0.113.5:443'), '203.0.113.5');
+  assert.equal(__test.normalizeClientIp('[2001:DB8::1]:443'), '2001:db8::1');
+  assert.equal(__test.normalizeClientIp('  ::1  '), '::1');
+  assert.equal(__test.normalizeClientIp('evil.example'), '');
+  assert.equal(__test.normalizeClientIp('999.1.1.1'), '');
+  assert.equal(__test.normalizeClientIp('1.2.3'), '');
+  assert.equal(__test.normalizeClientIp('::'), '::');
+  assert.equal(__test.normalizeClientIp('2001:db8::1'), '2001:db8::1');
+  assert.equal(__test.normalizeClientIp('1; DROP TABLE'), '');
+  assert.equal(__test.normalizeClientIp(''), '');
+  assert.equal(__test.normalizeClientIp(null), '');
+  assert.equal(__test.normalizeTrustProxy('TRUE'), 'forwarded');
+  assert.equal(__test.normalizeTrustProxy('Cloudflare'), 'cloudflare');
+  assert.equal(__test.normalizeTrustProxy('yes'), '');
 });

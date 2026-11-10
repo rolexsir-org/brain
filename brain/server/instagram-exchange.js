@@ -14,6 +14,12 @@
 //   RATE_LIMIT_MAX         requests per window per IP (default 30)
 //   RATE_LIMIT_WINDOW_MS   window length in ms (default 60000)
 //   UPSTREAM_TIMEOUT_MS    Meta request timeout (default 10000)
+//   TRUST_PROXY            which client identity to trust (default: none)
+//                          "cloudflare" -> cf-connecting-ip (Cloudflare sets it)
+//                          "forwarded"  -> first x-forwarded-for entry
+//                          "vercel" | "netlify" -> their forwarded headers
+//                          Only enable this when a proxy you control overwrites
+//                          the header; otherwise clients can rotate it.
 //
 // Routes (a deployment prefix such as /api/instagram is supported):
 //   POST   .../exchange           { code, redirect_uri } -> { access_token, ... }
@@ -90,25 +96,85 @@ function originAllowed(origin, allowedOrigins) {
   return list.includes('*') || list.includes(origin);
 }
 
-function clientKey(request) {
+/**
+ * Normalise an address to a rate-limit key, rejecting anything that is not a
+ * plausible IP. Forwarding headers are attacker-controlled unless a proxy you
+ * operate overwrites them, so nothing here is read unless the deployment says
+ * so explicitly (or Cloudflare's runtime marker proves the edge is in front).
+ */
+export function normalizeClientIp(value) {
+  if (typeof value !== 'string') return '';
+  let candidate = value.trim();
+  if (!candidate) return '';
+  // Forwarding headers may carry a port or an IPv6 bracket: [2001:db8::1]:443,
+  // 203.0.113.5:443. Strip the port only; never strip IPv6 colons.
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(candidate);
+  if (bracketed) {
+    candidate = bracketed[1];
+  } else {
+    const v4WithPort = /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/.exec(candidate);
+    if (v4WithPort) candidate = v4WithPort[1];
+  }
+  if (candidate.length < 2 || candidate.length > 45) return '';
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(candidate);
+  if (v4) {
+    // Reject 999.1.1.1 and similar: a bucket key should be a real address.
+    if (v4.slice(1).some(octet => Number(octet) > 255)) return '';
+    return candidate;
+  }
+  if (!/^[0-9a-fA-F:]+$/.test(candidate) || candidate.split(':').length < 3) return '';
+  return candidate.toLowerCase();
+}
+
+function normalizeTrustProxy(value) {
+  const mode = String(value == null ? '' : value).trim().toLowerCase();
+  if (mode === '1' || mode === 'true') return 'forwarded';
+  if (['cloudflare', 'forwarded', 'vercel', 'netlify'].includes(mode)) return mode;
+  return '';
+}
+
+export function clientKey(request, env = {}, options = {}) {
   const headers = request.headers;
-  const cf = headers.get('cf-connecting-ip');
-  if (cf) return `cf:${cf}`;
-  const forwarded = headers.get('x-forwarded-for');
-  if (forwarded) return `xff:${forwarded.split(',')[0].trim()}`;
-  const real = headers.get('x-real-ip');
-  if (real) return `real:${real}`;
+  const mode = normalizeTrustProxy(env.TRUST_PROXY);
+
+  if (mode === 'cloudflare') {
+    const cf = normalizeClientIp(headers.get('cf-connecting-ip'));
+    if (cf) return `cf:${cf}`;
+  }
+  if (mode === 'forwarded' || mode === 'vercel' || mode === 'netlify') {
+    const forwarded = headers.get('x-forwarded-for');
+    const first = forwarded ? normalizeClientIp(forwarded.split(',')[0]) : '';
+    if (first) return `ip:${first}`;
+    const platform = normalizeClientIp(headers.get('x-real-ip'))
+      || (mode === 'netlify' ? normalizeClientIp(headers.get('x-nf-client-connection-ip')) : '');
+    if (platform) return `ip:${platform}`;
+  }
+
+  // Cloudflare Workers expose request.cf, which only exists when the request
+  // really arrived through Cloudflare. In that runtime cf-connecting-ip is set
+  // by the edge, so it is trustworthy without extra configuration.
+  if (request.cf && mode !== 'forwarded' && mode !== 'vercel' && mode !== 'netlify') {
+    const cf = normalizeClientIp(headers.get('cf-connecting-ip'));
+    if (cf) return `cf:${cf}`;
+  }
+
+  // Direct Node/VPS deployment: the socket address cannot be forged by a client.
+  const socket = normalizeClientIp(options.remoteAddress);
+  if (socket) return `ip:${socket}`;
+
+  // Serverless runtimes without a socket and without explicit trust: one shared
+  // bucket. Fail-safe (stricter), never bypassable via headers.
   return 'unknown';
 }
 
-function rateLimitState(request, env) {
+function rateLimitState(request, env, options = {}) {
   if (env.RATE_LIMIT_DISABLED === '1') return { limited: false };
   const maxRaw = Number(env.RATE_LIMIT_MAX);
   const max = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.floor(maxRaw) : DEFAULT_RATE_LIMIT_MAX;
   const windowRaw = Number(env.RATE_LIMIT_WINDOW_MS);
   const windowMs = Number.isFinite(windowRaw) && windowRaw > 0 ? Math.floor(windowRaw) : DEFAULT_RATE_LIMIT_WINDOW_MS;
   const store = env.__rateBuckets instanceof Map ? env.__rateBuckets : rateBuckets;
-  const key = clientKey(request);
+  const key = clientKey(request, env, options);
   const now = Date.now();
   let bucket = store.get(key);
   if (!bucket || bucket.resetAt <= now) {
@@ -255,7 +321,7 @@ export async function handleRequest(request, env = {}, options = {}) {
     return jsonResponse({ error: 'service_misconfigured' }, 500, withCors());
   }
 
-  const limited = rateLimitState(request, environment);
+  const limited = rateLimitState(request, environment, options);
   if (limited.limited) {
     return jsonResponse({ error: 'rate_limited', retryAfter: limited.retryAfterSec }, 429, withCors({
       'Retry-After': String(limited.retryAfterSec)
@@ -362,7 +428,8 @@ export function createNodeHandler(env = process.env, options = {}) {
       res.end(JSON.stringify({ error: 'payload_too_large' }));
       return;
     }
-    const response = await handleRequest(request, env, options);
+    const remoteAddress = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : '';
+    const response = await handleRequest(request, env, { ...options, remoteAddress });
     const body = response.status === 204 ? null : await response.text();
     res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     res.end(body || undefined);
@@ -394,7 +461,7 @@ if (isMain) {
   });
 }
 
-export const __test = { corsHeaders, matchRoute, rateLimitState, readJsonBody, splitList, SECURITY_HEADERS, MAX_BODY_BYTES };
+export const __test = { corsHeaders, matchRoute, rateLimitState, readJsonBody, splitList, normalizeClientIp, normalizeTrustProxy, SECURITY_HEADERS, MAX_BODY_BYTES };
 
 // Example Netlify Function wrapper:
 // exports.handler = async (event) => {

@@ -184,15 +184,15 @@ async function run(){
     const exp=await s.exportState();
     const json=JSON.stringify(exp);
     let enc, dec, parsed;
-    try { enc=await encryptBackup(json,'pass123'); dec=await decryptBackup(enc,'pass123'); parsed=JSON.parse(dec); }
+    try { enc=await encryptBackup(json,'audit-passphrase-1'); dec=await decryptBackup(enc,'audit-passphrase-1'); parsed=JSON.parse(dec); }
     catch(e){ return {ok:false, detail: e.message}; }
     return parsed.collections.task.length===1 ? {ok:true} : {ok:false, detail: `tasks ${parsed.collections.task.length}`};
   });
   await check('3f v1 backup compatibility', async()=>{
     const s=await freshStore();
     // simulate v1 backup string
-    const encV1=await encryptBackup(JSON.stringify({app:'brain', schema:3, collections:{task:[{id:'t1', title:'old'}]}}),'pass123','v1');
-    const dec=await decryptBackup(encV1,'pass123');
+    const encV1=await encryptBackup(JSON.stringify({app:'brain', schema:3, collections:{task:[{id:'t1', title:'old'}]}}),'audit-passphrase-1','v1');
+    const dec=await decryptBackup(encV1,'audit-passphrase-1');
     return dec.includes('"old"') ? {ok:true} : {ok:false};
   });
 
