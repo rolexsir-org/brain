@@ -248,6 +248,31 @@ test('sheet closes via close control and Escape', async () => {
   assert.equal($('#sheet').classList.contains('open'), false, 'Escape dismisses the sheet');
 });
 
+test('Instagram workspace renders an existing draft with its status icon', async () => {
+  const { Store } = await import('../js/store/store.js');
+  const { openInstagramHub } = await import('../js/instagram/ui.js');
+  const store = new Store();
+  await store.init();
+  const draft = store.addSync('instagramDraft', { videoName: 'Test reel.mp4', videoMime: 'video/mp4', videoSize: 1024, caption: 'A real draft', status: 'draft' });
+  assert.ok(draft);
+  await store.flush();
+  openInstagramHub({ store, toast() {} });
+  const row = $('#sheetBody .ig-draft-list .srow');
+  assert.ok(row, 'existing draft is rendered');
+  assert.match(row.textContent, /A real draft/);
+  assert.ok(row.querySelector('svg'), 'status and draft icons render');
+  assert.doesNotMatch(row.textContent, /\[object SVG/);
+  await store.remove('instagramDraft', draft.id);
+  $('#sheetClose').click();
+  await delay(30);
+});
+
+test('dashboard cards do not inherit sheet positioning', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'css/app.css'), 'utf8');
+  assert.match(css, /\.sheet\s+\.panel\s*\{\s*position:\s*absolute/);
+  assert.doesNotMatch(css, /(?:^|\n)\.panel\s*\{\s*position:\s*absolute/);
+});
+
 test('redesigned shell reports no runtime errors', async () => {
   await delay(30);
   assert.deepEqual(errors, [], `runtime errors: ${errors.join('\n')}`);

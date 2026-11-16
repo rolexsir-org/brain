@@ -6,6 +6,7 @@ import { CONFIG, isConfigured } from './config.js';
 import { validateFileBasics, probeVideoMetadata, createVideoObjectUrl, revokeVideoObjectUrl, validateCaption, validateHashtags, buildCaptionWithHashtags } from './media.js';
 import { getLoginUrl, getConnectionStatus, isTokenExpired, tokenExpiryLabel, needsRefresh, buildDisconnectedConnection } from './auth.js';
 import { suggestHashtags, generateCaptionTemplate, preparePublishPreview } from './publish.js';
+import { icon } from '../ui/icons.js';
 
 let videoObjectUrl = null;
 let pendingVideoFile = null;
@@ -28,9 +29,9 @@ export function openInstagramHub(ctx) {
   renderTransfersInfo(ctx, body);
   // quick nav
   const nav=E.div({class:'actbar'});
-  const autoBtn=E.button({class:'ghost',type:'button'},'⚙️ Automation rules');
+  const autoBtn=E.button({class:'ghost',type:'button'},icon('settings', { size: 16 }), ' Automation rules');
   autoBtn.addEventListener('click', async()=>{ const { openInstagramAutomationPanel } = await import('../ui/automationCentre.js'); /* fallback */ try{ const mod=await import('../ui/automationCentre.js'); mod.openAutomationCentre(ctx);}catch{ ctx.toast('Automation centre loading…'); } });
-  const ccBtn=E.button({class:'ghost',type:'button'},'🗂️ Command Centre');
+  const ccBtn=E.button({class:'ghost',type:'button'},icon('brain', { size: 16 }), ' Command Centre');
   ccBtn.addEventListener('click', async()=>{ const mod=await import('../ui/commandCentre.js'); mod.openCommandCentre(ctx); });
   nav.append(autoBtn, ccBtn);
   body.append(nav);
@@ -49,7 +50,7 @@ async function renderQueueSection(ctx, parent){
     if(!q.length) parent.append(E.div({class:'note'},'Queue empty. Schedule a Reel or set a publish time.'));
     else for(const entry of q.slice(0,10)){
       const draft = ctx.store.get('instagramDraft', entry.draftId);
-      const row=E.div({class:'srow'}, E.div({class:'em'},'⏳'), E.div({class:'tx'}, E.b({}, draft?draft.videoName:entry.draftId), E.small({}, `Scheduled ${new Date(entry.scheduledAt).toLocaleString()} · attempts ${entry.attempts||0}`)));
+      const row=E.div({class:'srow'}, E.div({class:'em'},icon('clock', { size: 16 })), E.div({class:'tx'}, E.b({}, draft?draft.videoName:entry.draftId), E.small({}, `Scheduled ${new Date(entry.scheduledAt).toLocaleString()} · attempts ${entry.attempts||0}`)));
       const cancelBtn=E.button({class:'ghost danger',type:'button'},'Cancel');
       cancelBtn.addEventListener('click', async()=>{
         if(!window.confirm('Cancel queued publish?')) return;
@@ -76,9 +77,10 @@ function renderCalendarSection(ctx, parent){
     for(const date of Object.keys(byDate).sort()){
       parent.append(E.div({class:'dn', style:'margin-top:6px;font-weight:600'}, date));
       for(const d of byDate[date]){
-        const row=E.div({class:'srow', style:'padding:4px 0'});
-        row.append(E.div({class:'em'}, d.status==='PUBLISHED'?'✅':d.status==='SCHEDULED'?'📅':'🎬'), E.div({class:'tx'}, E.b({}, d.videoName), E.small({}, `${d.status} · ${(d.caption||'').slice(0,40)}`)));
+        const row=E.div({class:'srow', style:'padding:4px 0', role:'button', tabindex:'0', 'aria-label': `Edit ${d.videoName || 'Reel draft'}`});
+        row.append(E.div({class:'em'}, icon(String(d.status).toLowerCase() === 'published' ? 'check' : String(d.status).toLowerCase() === 'scheduled' ? 'calendar' : 'instagram', { size: 16 })), E.div({class:'tx'}, E.b({}, d.videoName), E.small({}, `${d.status} · ${(d.caption||'').slice(0,40)}`)));
         row.addEventListener('click', ()=> openDraftEditor(ctx, d.id));
+        row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openDraftEditor(ctx, d.id); } });
         row.style.cursor='pointer';
         parent.append(row);
       }
@@ -237,18 +239,20 @@ function renderDraftLibrary(ctx, parent) {
 }
 
 function renderDraftRow(ctx, draft) {
-  const row = E.div({ class: 'srow', style: 'align-items:center;padding:8px 0' });
-  const icon = E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5)' }, '🎬');
+  const row = E.div({ class: 'srow', style: 'align-items:center;padding:8px 0', role: 'button', tabindex: '0', 'aria-label': `Edit ${draft.videoName || 'Reel draft'}` });
+  const draftIcon = E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5)' }, icon('instagram', { size: 16 }));
   const tx = E.div({ class: 'tx' });
-  const statusDot = { draft: '⚪', ready: '🟢', pending: '🟡', publishing: '⏳', published: '✅', failed: '❌', scheduled: '📅' }[draft.status] || '⚪';
-  const subtitle = `${statusDot} ${draft.status} · ${draft.videoName || 'Reel'} · ${(draft.videoSize / 1048576).toFixed(1)} MB` +
+  const statusIcon = { draft: 'instagram', ready: 'check', pending: 'clock', publishing: 'refresh', published: 'check', failed: 'alertCircle', scheduled: 'calendar' }[draft.status] || 'instagram';
+  const statusDot = icon(statusIcon, { size: 12 });
+  const subtitle = `${draft.status} · ${draft.videoName || 'Reel'} · ${(draft.videoSize / 1048576).toFixed(1)} MB` +
     (draft.videoDuration ? ` · ${Math.round(draft.videoDuration)}s` : '') +
     (draft.lastError ? ` · ⚠️ ${String(draft.lastError).slice(0, 60)}` : '');
-  tx.append(E.b({}, draft.caption ? String(draft.caption).slice(0, 50) || draft.videoName : draft.videoName), E.small({}, subtitle));
+  tx.append(E.b({}, draft.caption ? String(draft.caption).slice(0, 50) || draft.videoName : draft.videoName), E.small({}, statusDot, ' ', subtitle));
   if (draft.hashtags && draft.hashtags.length) tx.append(E.div({ class: 'att' }, draft.hashtags.map(t => `#${t}`).join(' ')));
 
-  row.append(icon, tx);
+  row.append(draftIcon, tx);
   row.addEventListener('click', () => openDraftEditor(ctx, draft.id));
+  row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openDraftEditor(ctx, draft.id); } });
   row.style.cursor = 'pointer';
   return row;
 }
@@ -486,7 +490,7 @@ function openPublishConfirm(ctx, draftId, preview) {
   body.append(E.div({ class: 'banner', style: 'background:rgba(62,207,142,.12);border-color:rgba(62,207,142,.35)' }, '⚠️ This will publish to your Instagram Business account. No Reel is sent until you tap Publish.'));
 
   const card = E.div({ class: 'card', style: 'margin-top:8px' });
-  card.append(E.div({ class: 'k' }, '🎬 REEL PREVIEW'));
+  card.append(E.div({ class: 'k' }, icon('instagram', { size: 16 }), ' REEL PREVIEW'));
   card.append(E.div({ class: 't' }, preview.videoName));
   card.append(E.div({ class: 'meta' }, preview.videoMeta));
   card.append(E.div({ class: 'meta', style: 'white-space:pre-wrap;margin-top:6px' }, preview.caption || '(no caption)'));
@@ -547,7 +551,7 @@ function renderPublishedHistory(ctx, parent) {
   parent.append(E.div({ class: 'toggle', style: 'border:none;padding:6px 0' }, E.div({ class: 'tt' }, `✅ Published · ${pubs.length}`)));
   for (const pub of pubs.slice(0, 10)) {
     const row = E.div({ class: 'srow' },
-      E.div({ class: 'em' }, '✅'),
+      E.div({ class: 'em' }, icon('check', { size: 16 })),
       E.div({ class: 'tx' }, E.b({}, pub.videoName || 'Reel'), E.small({}, `${new Date(pub.publishedAt).toLocaleDateString()} · ${pub.caption ? String(pub.caption).slice(0, 60) : ''}`))
     );
     if (pub.permalink) {

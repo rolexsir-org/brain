@@ -164,7 +164,7 @@ export function renderHome(ctx, container) {
   } else {
     for (const task of focusTasks) {
       const overdue = isOverdue(task.due);
-      const row = E.div({ class: 'rowline', role: 'button', tabindex: '0' },
+      const row = E.div({ class: 'rowline' },
         E.span({ class: 'rl-icon' }, icon('tasks', { size: 15 })),
         E.span({ class: 'rl-body' },
           E.span({ class: 'rl-title' }, task.title || 'Untitled task'),
@@ -172,9 +172,6 @@ export function renderHome(ctx, container) {
         E.button({ class: `mini ${overdue ? 'r' : 'g'}`, type: 'button', 'aria-label': `Mark ${task.title || 'task'} done` }, overdue ? 'Clear' : 'Done'));
       const done = row.querySelector('.mini');
       done.addEventListener('click', async () => { await ctx.runAction({ id: ACTION.TASK_COMPLETE, args: { kind: 'task', id: task.id } }); });
-      const open = () => ctx.go('module', { kind: 'task' });
-      row.addEventListener('click', open);
-      row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
       focusList.append(row);
     }
   }
