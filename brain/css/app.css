@@ -943,6 +943,9 @@ select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   .topbar { padding-left: 12px; padding-right: 12px; }
   .brand .sub { display: none; }
   .topbar-page { display: none; }
+  .mod-head { gap: 8px; }
+  .mod-title .mod-icon { width: 34px; height: 34px; border-radius: 10px; }
+  .mod-title h2 { font-size: 18px; }
   .mod-actions { width: 100%; }
   .mod-actions .search { max-width: none; }
   .toast { bottom: calc(84px + var(--bottomnav-h) + env(safe-area-inset-bottom)); }
@@ -962,6 +965,15 @@ select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   .card { padding: 12px; }
   .mini { padding: 5px 8px; }
   .mod-title h2 { font-size: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @media (min-width: 1280px) {

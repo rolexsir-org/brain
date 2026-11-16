@@ -567,7 +567,11 @@ function closeSheet({ fromHistory = false } = {}) {
   if (!sheet.classList.contains('open')) return;
   sheet.classList.remove('open');
   setSheetModalState(false);
-  if (sheetWasPushed && !fromHistory && window.history && window.history.back) window.history.back();
+  if (sheetWasPushed && !fromHistory && window.history && window.history.back) {
+    // closeSheet re-enters from the history listener; restore the flag there.
+    sheetWasPushed = false;
+    window.history.back();
+  }
   sheetWasPushed = false;
   if (sheetFocus && typeof sheetFocus.focus === 'function') {
     try { sheetFocus.focus({ preventScroll: true }); } catch {}
@@ -684,10 +688,10 @@ function openSettings() {
   $('#sheetTitle').textContent = 'Settings';
   body.textContent = '';
   const current = store.settings;
-  const name = E.input({ value: current.name, placeholder: 'Your name', autocomplete: 'name' });
-  const currency = E.select({}, CURRENCIES.map(value => E.option({ value, selected: current.currency === value || null }, value)));
-  const locale = E.select({}, LOCALES.map(value => E.option({ value, selected: current.locale === value || null }, value)));
-  const countryCode = E.input({ type: 'tel', inputmode: 'numeric', value: current.countryCode || '', placeholder: 'e.g. 91', maxlength: '3' });
+  const name = E.input({ value: current.name, placeholder: 'Your name', autocomplete: 'name', 'aria-label': 'Your name' });
+  const currency = E.select({ 'aria-label': 'Currency' }, CURRENCIES.map(value => E.option({ value, selected: current.currency === value || null }, value)));
+  const locale = E.select({ 'aria-label': 'Number and date format' }, LOCALES.map(value => E.option({ value, selected: current.locale === value || null }, value)));
+  const countryCode = E.input({ type: 'tel', inputmode: 'numeric', value: current.countryCode || '', placeholder: 'e.g. 91', maxlength: '3', 'aria-label': 'WhatsApp country code' });
   body.append(field('Your name', name));
   body.append(field('Currency', currency));
   body.append(field('Number and date format', locale));
