@@ -1,12 +1,12 @@
 {
   "name": "brain",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Brain — a private, offline, natural-language personal assistant PWA",
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test test/*.test.js && node scripts/ui-smoke.mjs",
-    "test:unit": "node --test test/*.test.js",
+    "test": "node --test --test-force-exit test/*.test.js && node scripts/ui-smoke.mjs",
+    "test:unit": "node --test --test-force-exit test/*.test.js",
     "test:ui": "node scripts/ui-smoke.mjs",
     "build": "node scripts/verify-build.mjs",
     "start": "node server/static-server.mjs",

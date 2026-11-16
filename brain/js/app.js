@@ -7,7 +7,10 @@ import { Brain } from './engine/intent.js';
 import * as Domain from './engine/actions.js';
 import { nodes as E, todayKey } from './util/util.js';
 import { nextOccurrence } from './util/date.js';
-import { entityCard, kindIcon } from './ui/cards.js';
+import { entityCard } from './ui/cards.js';
+import { icon, iconForKind, NAV_ITEMS } from './ui/icons.js';
+import { renderHome } from './ui/dashboard.js';
+import { renderModule, renderCalendar, renderMore } from './ui/modules.js';
 import { Scheduler, brief, requestPermission, perm } from './notify.js';
 import { setupInstall, registerSw, isStandalone, reminderCapability } from './install.js';
 import { LOCALES, CURRENCIES } from './util/constants.js';
@@ -30,13 +33,13 @@ let toastTimer = null;
 let restoreBusy = false;
 
 const SUGGESTIONS = [
-  { text: 'remind me to call mom tomorrow at 7pm', label: '🔔 Reminder' },
-  { text: 'add task finish the report by friday', label: '✅ Task' },
-  { text: 'spent 850 on groceries', label: '💰 Spent' },
-  { text: 'Priya’s birthday is March 12', label: '🎂 Birthday' },
-  { text: 'add a photo to my journal', label: '📷 Photo' },
-  { text: 'share today’s plan', label: '🔗 Share' },
-  { text: 'open Instagram', label: '📸 Instagram' }
+  { text: 'remind me to call mom tomorrow at 7pm', label: 'Reminder', icon: 'bell' },
+  { text: 'add task finish the report by friday', label: 'Task', icon: 'tasks' },
+  { text: 'spent 850 on groceries', label: 'Spent', icon: 'money' },
+  { text: 'Priya’s birthday is March 12', label: 'Birthday', icon: 'star' },
+  { text: 'add a photo to my journal', label: 'Photo', icon: 'camera' },
+  { text: 'share today’s plan', label: 'Share', icon: 'share' },
+  { text: 'open Instagram', label: 'Instagram', icon: 'instagram' }
 ];
 
 async function boot() {
@@ -54,6 +57,12 @@ async function boot() {
     notify: showSystemNotification,
     pushAlert: (text, reminder) => pushBot(text, reminder ? [{ kind: 'reminder', id: reminder.id }] : [], { sys: true }),
     afterMutate: renderAll,
+    go: (name, params) => showView(name, params),
+    getBrief: () => lastBrief,
+    openSettings,
+    openDiagnostics,
+    openDiagnosticsPanel: () => import('./ui/diagnostics.js').then(mod => mod.openDiagnosticsPanel(ctx)).catch(() => toast('Diagnostics could not be opened.')),
+    doExport,
     scrollToCard: id => {
       const element = document.querySelector(`[data-cid="${cssEscape(id)}"]`);
       if (element) element.scrollIntoView({ block: 'center', behavior: motionBehavior() });
@@ -68,6 +77,8 @@ async function boot() {
   wireHeader();
   wireComposer();
   wireSheet();
+  wireNav();
+  wireTheme();
   buildSuggestions();
   wireLifecycle();
   wireServiceWorkerMessages();
@@ -81,8 +92,8 @@ async function boot() {
       pushBot(`⚠️ Temporary storage only (${mode}): Brain could not access permanent storage on this device (private browsing or storage blocked). Your data will disappear when you close this tab. Export a backup before leaving if you entered anything important.`, [], { sys:true });
       const banner = document.createElement('div');
       banner.id='storage-warning';
+      banner.className='storage-warning';
       banner.setAttribute('role','alert');
-      banner.style.cssText='position:fixed;top:0;left:0;right:0;background:#f59e0b;color:#000;padding:8px 12px;text-align:center;font-size:13px;z-index:9999;border-bottom:2px solid #92400e';
       banner.textContent=`Temporary storage (${mode}) — data will NOT persist after close. Tap Menu → Back up to save.`;
       document.body.prepend(banner);
     }, 500);
@@ -133,6 +144,7 @@ async function boot() {
   showWelcome();
   scheduler.start();
   showBriefOnce();
+  showView('home');
 }
 
 function motionBehavior() { return store && store.settings.reducedMotion ? 'auto' : 'smooth'; }
@@ -140,6 +152,7 @@ function cssEscape(value) { return (window.CSS && CSS.escape) ? CSS.escape(value
 
 // ---------- Conversation rendering ----------
 const blocks = [];
+let lastBrief = null;
 
 function renderAll() {
   const chat = $('#chat');
@@ -150,6 +163,9 @@ function renderAll() {
   chat.textContent = '';
   for (const block of blocks.slice(-200)) chat.append(renderBlock(block));
   autoScroll();
+  // Keep the visible dashboard/module page in sync with the same mutation that
+  // produced this transcript entry.
+  if (ctx) refreshView();
 }
 
 function renderBlock(block) {
@@ -316,17 +332,159 @@ function prepareReplyForDevice(response) {
 
 // ---------- Header, composer, sheet ----------
 function setTitle() { $('#title').textContent = 'Brain'; }
-function wireHeader() { $('#menuBtn').addEventListener('click', openMenu); }
+
+// View router: one workspace, five destinations. Module pages are rendered on
+// demand from the Store, and the assistant view keeps the existing transcript.
+let currentView = 'home';
+let currentModuleKind = 'task';
+let pendingPrompt = '';
+
+function moduleLabel(kind) {
+  const labels = {
+    task: 'Tasks', reminder: 'Reminders', note: 'Notes', person: 'People', money: 'Money',
+    debt: 'Debts', stockItem: 'Inventory', habit: 'Habits', journal: 'Journal',
+    event: 'Events', photo: 'Photos', instagramDraft: 'Reel drafts', instagramPublication: 'Published Reels'
+  };
+  return labels[kind] || 'Module';
+}
+
+function showView(name, params = {}) {
+  currentView = name;
+  if (name === 'module') currentModuleKind = params.kind || 'task';
+  if (params.prompt) pendingPrompt = params.prompt;
+  document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${name}`; });
+  const titles = { home: 'Home', assistant: 'Brain Assistant', calendar: 'Calendar', more: 'More', module: moduleLabel(currentModuleKind) };
+  const titleEl = $('#topbarTitle');
+  if (titleEl) titleEl.textContent = titles[name] || 'Brain';
+  document.querySelectorAll('[data-view]').forEach(button => {
+    const target = button.getAttribute('data-view');
+    const kind = button.getAttribute('data-kind');
+    const active = target === name && (target !== 'module' || kind === currentModuleKind);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  const container = document.getElementById(`view-${name}`);
+  if (!container) return;
+  if (name === 'home') renderHome(ctx, container);
+  else if (name === 'calendar') renderCalendar(ctx, container);
+  else if (name === 'more') renderMore(ctx, container);
+  else if (name === 'module') renderModule(ctx, currentModuleKind, container);
+  else if (name === 'assistant') {
+    if (pendingPrompt) {
+      const input = $('#in');
+      if (input && !input.value) { input.value = pendingPrompt; autosize(); }
+      pendingPrompt = '';
+      setTimeout(() => { if (input) input.focus(); }, 30);
+    }
+    autoScroll();
+  }
+  container.scrollTop = 0;
+}
+
+function refreshView() {
+  if (!ctx) return;
+  const container = document.getElementById(`view-${currentView}`);
+  if (!container || container.hidden) return;
+  if (currentView === 'home') renderHome(ctx, container);
+  else if (currentView === 'calendar') renderCalendar(ctx, container);
+  else if (currentView === 'more') renderMore(ctx, container);
+  else if (currentView === 'module') renderModule(ctx, currentModuleKind, container);
+}
+
+function wireNav() {
+  const side = $('#sidenav');
+  if (side) {
+    side.textContent = '';
+    for (const item of NAV_ITEMS) {
+      const button = E.button({
+        class: 'nav-item', type: 'button', 'data-view': item.view,
+        'data-kind': item.params ? item.params.kind : null
+      }, icon(item.icon, { size: 19 }), E.span({}, item.label));
+      button.addEventListener('click', () => showView(item.view, item.params));
+      side.append(button);
+    }
+  }
+  const bottom = $('#bottomnavInner');
+  if (bottom) {
+    bottom.textContent = '';
+    for (const item of NAV_ITEMS) {
+      const button = E.button({
+        class: 'bottomnav-item', type: 'button', 'data-view': item.view,
+        'data-kind': item.params ? item.params.kind : null,
+        'aria-label': item.label
+      }, icon(item.icon, { size: 22 }), E.span({}, item.label === 'Brain Assistant' ? 'Assistant' : item.label));
+      button.addEventListener('click', () => showView(item.view, item.params));
+      bottom.append(button);
+    }
+  }
+  const tools = $('#sidetools');
+  if (tools) {
+    tools.textContent = '';
+    const entries = [
+      { label: 'Command Centre', iconName: 'assistant', handler: () => runAction({ id: ACTION.COMMAND_CENTRE_OPEN, args: {} }) },
+      { label: 'Automation Centre', iconName: 'zap', handler: () => runAction({ id: ACTION.AUTOMATION_CENTRE_OPEN, args: {} }) },
+      { label: 'Settings', iconName: 'settings', handler: () => openSettings() },
+      { label: 'Device capabilities', iconName: 'shield', handler: () => openDiagnostics() }
+    ];
+    for (const entry of entries) {
+      const button = E.button({ class: 'nav-item', type: 'button' }, icon(entry.iconName, { size: 18 }), E.span({}, entry.label));
+      button.addEventListener('click', entry.handler);
+      tools.append(button);
+    }
+  }
+}
+
+function wireTheme() {
+  let stored = null;
+  try { stored = localStorage.getItem('brain:theme'); } catch {}
+  if (stored === 'light' || stored === 'dark') document.documentElement.dataset.theme = stored;
+  else document.documentElement.removeAttribute('data-theme');
+  applyThemeIcon();
+  const button = $('#themeBtn');
+  if (!button) return;
+  button.addEventListener('click', () => {
+    const isDark = isDarkMode();
+    const next = isDark ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('brain:theme', next); } catch {}
+    applyThemeIcon();
+  });
+}
+function isDarkMode() {
+  const current = document.documentElement.dataset.theme;
+  if (current) return current === 'dark';
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch { return false; }
+}
+function applyThemeIcon() {
+  const button = $('#themeBtn');
+  if (!button) return;
+  const dark = isDarkMode();
+  button.textContent = '';
+  button.append(icon(dark ? 'sun' : 'moon', { size: 18 }));
+  button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  button.setAttribute('aria-label', button.title);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', dark ? '#0a0f1c' : '#f4f6fb');
+}
+
+function wireHeader() {
+  $('#menuBtn').append(icon('menu', { size: 19 }));
+  $('#installBtn').append(icon('download', { size: 18 }));
+  $('#sheetClose').append(icon('close', { size: 17 }));
+  $('#menuBtn').addEventListener('click', openMenu);
+}
 function buildSuggestions() {
   const root = $('#suggests');
   root.textContent = '';
   for (const suggestion of SUGGESTIONS) {
-    const button = E.button({ class: 'chip', type: 'button' }, suggestion.label);
+    const button = E.button({ class: 'chip', type: 'button' }, icon(suggestion.icon, { size: 14 }), suggestion.label);
     button.addEventListener('click', () => { $('#in').value = suggestion.text; $('#in').focus(); autosize(); });
     root.append(button);
   }
 }
 function wireComposer() {
+  $('#mic').append(icon('mic', { size: 17 }));
+  $('#send').append(icon('send', { size: 17 }));
   const input = $('#in');
   input.addEventListener('input', autosize);
   input.addEventListener('keydown', event => {
@@ -385,6 +543,7 @@ function wireSheet() {
   // Panel modules live in their own files; they ask the shell to open the sheet
   // so focus trapping, background inertness, and the history entry stay correct.
   document.addEventListener('brain:sheet-open', () => openSheet());
+  document.addEventListener('brain:sheet-close', () => closeSheet());
 }
 function openSheet() {
   const sheet = $('#sheet');
@@ -426,8 +585,8 @@ function busyClick(button, handler) {
   });
   return button;
 }
-function menuButton(label, handler, className = 'ghost') {
-  return busyClick(E.button({ class: className, type: 'button' }, label), handler);
+function menuButton(label, handler, className = 'ghost', iconName = '') {
+  return busyClick(E.button({ class: className, type: 'button' }, iconName ? icon(iconName, { size: 16 }) : null, label), handler);
 }
 function openMenu() {
   const body = $('#sheetBody');
@@ -443,20 +602,20 @@ function openMenu() {
   ];
   // Command & automation centres prominent
   body.append(E.div({ class: 'hr' }));
-  const ccRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#0ea5e9;color:#fff' }, '🗂️'), E.div({ class: 'tx' }, E.b({}, 'Command Centre'), E.small({}, 'Search everything · pending actions · content calendar')));
+  const ccRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, icon('assistant', { size: 18 })), E.div({ class: 'tx' }, E.b({}, 'Command Centre'), E.small({}, 'Search everything · pending actions · content calendar')));
   // Open the panel while the sheet stays open: closing first would schedule a
   // history.back() that races with the new panel and immediately closes it.
   ccRow.addEventListener('click', async ()=>{ try { const mod=await import('./ui/commandCentre.js'); mod.openCommandCentre(ctx); } catch { toast('The Command Centre could not be opened.'); } });
-  const acRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em', style:'background:#7c3aed;color:#fff' }, '🤖'), E.div({ class: 'tx' }, E.b({}, 'Automation Centre'), E.small({}, 'Permissions · automations · approvals · failures')));
+  const acRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, icon('zap', { size: 18 })), E.div({ class: 'tx' }, E.b({}, 'Automation Centre'), E.small({}, 'Permissions · automations · approvals · failures')));
   acRow.addEventListener('click', async ()=>{ try { const mod=await import('./ui/automationCentre.js'); mod.openAutomationCentre(ctx); } catch { toast('The Automation Centre could not be opened.'); } });
   body.append(ccRow, acRow);
   // Storage diagnostics quick link
-  const sdRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, '💾'), E.div({ class: 'tx' }, E.b({}, 'Storage & media health'), E.small({}, 'Check storage use and media integrity')));
-  sdRow.addEventListener('click', async ()=>{ closeSheet(); const rep=await store.storageReport(); pushBot(`Storage: ${rep.jsonChars} chars JSON, ${rep.photoChars} chars photos. Usage quota: ${rep.estimate? `${Math.round((rep.estimate.usage||0)/1024)}KB/${Math.round((rep.estimate.quota||0)/1024)}KB`: 'unknown'}. Media integrity: ${JSON.stringify(rep.mediaIntegrity)}`, []); });
+  const sdRow = E.button({ class: 'srow', type: 'button' }, E.div({ class: 'em' }, icon('database', { size: 18 })), E.div({ class: 'tx' }, E.b({}, 'Storage & media health'), E.small({}, 'Check storage use and media integrity')));
+  sdRow.addEventListener('click', async ()=>{ closeSheet(); showView('assistant'); const rep=await store.storageReport(); pushBot(`Storage: ${rep.jsonChars} chars JSON, ${rep.photoChars} chars photos. Usage quota: ${rep.estimate? `${Math.round((rep.estimate.usage||0)/1024)}KB/${Math.round((rep.estimate.quota||0)/1024)}KB`: 'unknown'}. Media integrity: ${JSON.stringify(rep.mediaIntegrity)}`, []); });
   body.append(sdRow);
   for (const [kind, label] of sections) {
     const row = E.button({ class: 'srow', type: 'button' },
-      E.div({ class: 'em', 'aria-hidden': 'true' }, kindIcon(kind)),
+      E.div({ class: 'em', 'aria-hidden': 'true' }, icon(iconForKind(kind), { size: 17 })),
       E.div({ class: 'tx' }, E.b({}, `${label} · ${counts[kind] || 0}`), E.small({}, sectionHint(kind))));
     row.addEventListener('click', () => { closeSheet(); listKind(kind); });
     body.append(row);
@@ -467,23 +626,23 @@ function openMenu() {
   const igLabel = ig.connected ? `Instagram · @${ig.username || 'connected'}` : 'Instagram · connect Business account';
   const igHint = ig.connected ? 'Reels, drafts, publishing' : 'Publish approved Reels (explicit approval required)';
   const igRow = E.button({ class: 'srow', type: 'button' },
-    E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5);color:#fff' }, '📸'),
+    E.div({ class: 'em', style: 'background:linear-gradient(135deg,#feda75,#d62976,#4f5bd5);color:#fff' }, icon('instagram', { size: 18 })),
     E.div({ class: 'tx' }, E.b({}, igLabel), E.small({}, igHint))
   );
   igRow.addEventListener('click', () => { runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } }); });
   body.append(igRow);
   body.append(E.div({ class: 'hr' }));
   const caps = getCaps();
-  if (caps.files.picker) body.append(menuButton('🖼️ Add a photo', () => { closeSheet(); runAction({ id: ACTION.PHOTO_PICK, args: {} }); }));
-  if (caps.files.captureCamera) body.append(menuButton('📸 Take a photo', () => { closeSheet(); runAction({ id: ACTION.CAMERA_PICK, args: {} }); }));
-  if (caps.contacts.select) body.append(menuButton('👤 Import device contacts', () => { closeSheet(); runAction({ id: ACTION.CONTACT_PICK, args: {} }); }));
-  body.append(menuButton('🔗 Share today’s plan', () => { closeSheet(); runAction({ id: ACTION.SHARE, args: { title: 'Brain — Today’s plan', text: brain._sharePlanText() } }); }));
-  body.append(menuButton('💾 Back up my data', () => { closeSheet(); doExport(); }));
-  body.append(menuButton('⚙️ Settings', () => openSettings()));
-  body.append(menuButton('🧰 Device capabilities', () => openDiagnostics()));
-  body.append(menuButton('🔍 Diagnostics & release', async () => { try { const mod=await import('./ui/diagnostics.js'); mod.openDiagnosticsPanel(ctx); } catch { toast('Diagnostics could not be opened.'); } }));
-  body.append(menuButton('⛔ Emergency stop queue', async () => { const { setEmergencyStop } = await import('./instagram/queue.js'); setEmergencyStop(true); toast('Queue emergency-stopped. Resume in Automation Centre.'); }));
-  body.append(menuButton('✨ Add sample data', () => { closeSheet(); loadDemo(); }));
+  if (caps.files.picker) body.append(menuButton('Add a photo', () => { closeSheet(); runAction({ id: ACTION.PHOTO_PICK, args: {} }); }, 'ghost', 'camera'));
+  if (caps.files.captureCamera) body.append(menuButton('Take a photo', () => { closeSheet(); runAction({ id: ACTION.CAMERA_PICK, args: {} }); }, 'ghost', 'camera'));
+  if (caps.contacts.select) body.append(menuButton('Import device contacts', () => { closeSheet(); runAction({ id: ACTION.CONTACT_PICK, args: {} }); }, 'ghost', 'people'));
+  body.append(menuButton('Share today’s plan', () => { closeSheet(); runAction({ id: ACTION.SHARE, args: { title: 'Brain — Today’s plan', text: brain._sharePlanText() } }); }, 'ghost', 'share'));
+  body.append(menuButton('Back up my data', () => { closeSheet(); doExport(); }, 'ghost', 'download'));
+  body.append(menuButton('Settings', () => openSettings(), 'ghost', 'settings'));
+  body.append(menuButton('Device capabilities', () => openDiagnostics(), 'ghost', 'shield'));
+  body.append(menuButton('Diagnostics & release', async () => { try { const mod=await import('./ui/diagnostics.js'); mod.openDiagnosticsPanel(ctx); } catch { toast('Diagnostics could not be opened.'); } }, 'ghost', 'activity'));
+  body.append(menuButton('Emergency stop queue', async () => { const { setEmergencyStop } = await import('./instagram/queue.js'); setEmergencyStop(true); toast('Queue emergency-stopped. Resume in Automation Centre.'); }, 'ghost', 'alert'));
+  body.append(menuButton('Add sample data', () => { closeSheet(); loadDemo(); }, 'ghost', 'sparkles'));
   openSheet();
 }
 function sectionHint(kind) {
@@ -500,6 +659,7 @@ function listKind(kind) {
     runAction({ id: ACTION.INSTAGRAM_OPEN, args: { id: 'hub' } });
     return;
   }
+  showView('assistant');
   const items = store.list(kind);
   const label = ({ task: 'tasks', reminder: 'reminders', note: 'notes', person: 'people', photo: 'photos', event: 'events', money: 'money records', debt: 'debts', stockItem: 'stock items', habit: 'habits', journal: 'journal entries', instagramDraft: 'Reel drafts', instagramPublication: 'published Reels' })[kind] || kind;
   if (!items.length) { pushBot(`No ${label} yet.`); return; }
@@ -570,9 +730,9 @@ function openSettings() {
     return true;
   }, 'Reduce motion'));
   body.append(reduced, E.div({ class: 'hr' }));
-  if (caps.files.picker) body.append(menuButton('📂 Restore from a backup', openRestorePicker));
-  body.append(menuButton('💾 Back up (save file)', () => { closeSheet(); doExport(); }));
-  const erase = menuButton('🗑️ Erase all local data', eraseAll, 'ghost danger');
+  if (caps.files.picker) body.append(menuButton('Restore from a backup', openRestorePicker, 'ghost', 'refresh'));
+  body.append(menuButton('Back up (save file)', () => { closeSheet(); doExport(); }, 'ghost', 'download'));
+  const erase = menuButton('Erase all local data', eraseAll, 'ghost danger', 'trash');
   body.append(erase);
   body.append(E.div({ class: 'note' }, 'Privacy: data stays in this browser’s local storage (usually IndexedDB). Keep a backup before clearing browser/site data.'));
   body.append(E.div({ class: 'note' }, 'Reminder limitation: browsers cannot guarantee a timer once the OS fully suspends or closes the app. Brain catches up when it runs again; it does not claim guaranteed background alarms.'));
@@ -894,7 +1054,7 @@ async function deleteRecord(kind, id) {
   // Show undo toast with action
   const undoNudge = document.createElement('button');
   undoNudge.textContent='Undo';
-  undoNudge.style.cssText='margin-left:8px;background:#fff;border:1px solid #333;padding:2px 6px;border-radius:4px;cursor:pointer';
+  undoNudge.className='toast-undo';
   undoNudge.addEventListener('click', ()=> undoLast());
   toast('Deleted. ');
   // attach undo after toast (simple)
@@ -1011,9 +1171,9 @@ function viewPhoto(id) {
   body.textContent = '';
   body.append(E.div({ class: 'center' }, E.img({ class: 'photoView', src: photo.dataUrl, alt: photo.name || 'Saved photo' })));
   const actions = E.div({ class: 'actbar' });
-  actions.append(menuButton(getCaps().share.shareFiles ? '🔗 Share' : '💾 Save / share', () => runAction({ id: ACTION.SHARE, args: { title: photo.name || 'Photo', text: 'Photo from Brain', photoId: photo.id } })));
-  actions.append(menuButton('💾 Save copy', () => runAction({ id: ACTION.PHOTO_DOWNLOAD, args: { id: photo.id } })));
-  actions.append(menuButton('🗑️ Delete', () => runAction({ id: ACTION.RECORD_DELETE, args: { kind: 'photo', id: photo.id } }), 'ghost danger'));
+  actions.append(menuButton(getCaps().share.shareFiles ? 'Share' : 'Save / share', () => runAction({ id: ACTION.SHARE, args: { title: photo.name || 'Photo', text: 'Photo from Brain', photoId: photo.id } }), 'ghost', 'share'));
+  actions.append(menuButton('Save copy', () => runAction({ id: ACTION.PHOTO_DOWNLOAD, args: { id: photo.id } }), 'ghost', 'download'));
+  actions.append(menuButton('Delete', () => runAction({ id: ACTION.RECORD_DELETE, args: { kind: 'photo', id: photo.id } }), 'ghost danger', 'trash'));
   body.append(actions);
   openSheet();
   return { ok: true };
@@ -1521,8 +1681,7 @@ async function handleAutomationCentreOpen(){
   return {ok:true};
 }
 async function handleCalendarOpen(){
-  const mod=await import('./ui/commandCentre.js');
-  mod.openCommandCentre(ctx);
+  showView('calendar');
   return {ok:true};
 }
 
@@ -1530,7 +1689,7 @@ function showBriefOnce() {
   const day = todayKey();
   if (store.settings.briefDate === day) return;
   const text = brief(store);
-  if (text) { store.updateSettings({ briefDate: day }).catch(() => {}); pushBot(text, [], { brief: true }); }
+  if (text) { lastBrief = text; store.updateSettings({ briefDate: day }).catch(() => {}); pushBot(text, [], { brief: true }); }
 }
 
 // ---------- Voice input ----------
@@ -1548,10 +1707,10 @@ function toggleVoice() {
   recognition.lang = store.settings.locale || 'en';
   recognition.interimResults = false;
   recognition.maxAlternatives = 1;
-  recognition.onstart = () => { recognizing = true; mic.classList.add('on'); mic.textContent = '◉'; };
-  recognition.onend = () => { recognizing = false; mic.classList.remove('on'); mic.textContent = '🎤'; };
+  recognition.onstart = () => { recognizing = true; mic.classList.add('on'); mic.setAttribute('aria-label', 'Stop voice input'); };
+  recognition.onend = () => { recognizing = false; mic.classList.remove('on'); mic.setAttribute('aria-label', 'Voice input'); };
   recognition.onerror = event => {
-    recognizing = false; mic.classList.remove('on'); mic.textContent = '🎤';
+    recognizing = false; mic.classList.remove('on'); mic.setAttribute('aria-label', 'Voice input');
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') toast('Microphone permission was denied.');
     else if (event.error !== 'aborted') toast('Voice input could not understand that. Try again.');
   };
@@ -1577,24 +1736,21 @@ function renderFatal(error) {
   try {
     document.body.textContent = '';
     const panel = document.createElement('div');
+    panel.className = 'fatal';
     panel.setAttribute('role', 'alert');
-    panel.style.cssText = 'max-width:460px;margin:12vh auto;padding:20px;font-family:system-ui,sans-serif;color:#e9edf4;background:#0e131f;border:1px solid #26304a;border-radius:14px;line-height:1.5;';
     const title = document.createElement('h1');
     title.textContent = 'Brain could not start';
-    title.style.cssText = 'font-size:18px;margin:0 0 8px;';
     const body = document.createElement('p');
-    body.style.cssText = 'margin:0 0 8px;font-size:14px;color:#c8d0e0;';
     body.textContent = 'Your saved data was not deleted. This is usually a browser storage problem (private browsing, a full disk, or a blocked database).';
     const reason = document.createElement('p');
-    reason.style.cssText = 'margin:0 0 14px;font-size:13px;color:#ffb4b4;word-break:break-word;';
+    reason.className = 'fatal-reason';
     reason.textContent = detail;
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.textContent = 'Try again';
-    retry.style.cssText = 'background:#3ecf8e;border:none;padding:9px 16px;border-radius:8px;cursor:pointer;color:#000;font-weight:600;';
     retry.addEventListener('click', () => window.location.reload());
     const help = document.createElement('p');
-    help.style.cssText = 'margin:14px 0 0;font-size:12px;color:#8f9ab3;';
+    help.className = 'note';
     help.textContent = 'If this repeats, open Brain in a normal (non-private) window and free some device storage.';
     panel.append(title, body, reason, retry, help);
     document.body.append(panel);

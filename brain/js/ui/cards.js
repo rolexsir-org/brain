@@ -6,6 +6,7 @@ import { nodes as E, formatMoney, todayKey } from '../util/util.js';
 import { fmtHM } from '../util/date.js';
 import { availableActions, ACTION } from '../actions/system.js';
 import { isSafeImageDataUrl } from '../store/validate.js';
+import { icon, iconForKind } from './icons.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -60,7 +61,7 @@ export function entityCard(ctx, kind, id) {
   const record = ctx.store.list(kind).find(item => item.id === id);
   if (!record) return null;
   const card = E.div({ class: 'card', dataset: { cid: id } });
-  const heading = E.div({ class: 'k' }, E.span({}, kindIcon(kind)), E.span({}, kind.replace(/([A-Z])/g, ' $1').toUpperCase()));
+  const heading = E.div({ class: 'k' }, E.span({ class: 'kicon' }, icon(iconForKind(kind), { size: 13 })), E.span({}, kind.replace(/([A-Z])/g, ' $1').toUpperCase()));
   const meta = E.div({ class: 'meta' });
   const actions = E.div({ class: 'act' });
   card.append(heading);
