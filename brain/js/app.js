@@ -1007,8 +1007,8 @@ async function runAction(action) {
       case ACTION.INSTAGRAM_PUBLISH_PREVIEW: return handleInstagramPublishPreview(args.kind, args.id);
       case ACTION.INSTAGRAM_PUBLISH: return handleInstagramPublish(args.kind, args.id);
       case ACTION.INSTAGRAM_SCHEDULE: return handleInstagramSchedule(args);
-      case ACTION.INSTAGRAM_QUEUE_ADD: return handleInstagramQueueAdd(args);
-      case ACTION.INSTAGRAM_QUEUE_CANCEL: return handleInstagramQueueCancel(args);
+      case ACTION.INSTAGRAM_QUEUE_ADD: return await handleInstagramQueueAdd(args);
+      case ACTION.INSTAGRAM_QUEUE_CANCEL: return await handleInstagramQueueCancel(args);
       case ACTION.INSTAGRAM_FAILED_RETRY: return handleInstagramFailedRetry(args);
       case ACTION.INSTAGRAM_AUTOMATION_OPEN: return handleInstagramAutomationOpen();
       case ACTION.INSTAGRAM_AUTOMATION_PAUSE: return handleInstagramAutomationPause();

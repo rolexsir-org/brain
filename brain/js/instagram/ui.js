@@ -378,12 +378,24 @@ export async function openDraftEditor(ctx, draftId, fileOverride) {
   body.append(schedWrap);
   const schedBtn=E.button({class:'ghost', type:'button'},'Save schedule');
   schedBtn.addEventListener('click', async()=>{
-    const val=schedInput.value? new Date(schedInput.value).toISOString(): null;
-    await ctx.store.update('instagramDraft', draftId, { scheduledAt: val, status: val? 'SCHEDULED': draft.status });
-    if(val){
-      try{ const { enqueue }=await import('./queue.js'); await enqueue(ctx.store, draftId, { scheduledAt: val }); }catch{}
-    }
-    ctx.toast(val? 'Scheduled — will publish when Brain is open at that time.':'Schedule cleared.');
+    if (schedBtn.disabled) return;
+    schedBtn.disabled = true;
+    try {
+      const date = schedInput.value ? new Date(schedInput.value) : null;
+      if (date && Number.isNaN(date.getTime())) { ctx.toast('Choose a valid schedule.'); return; }
+      const { enqueue, cancelQueueForDraft } = await import('./queue.js');
+      if (date) {
+        const result = await enqueue(ctx.store, draftId, { scheduledAt: date.toISOString() });
+        if (!result.ok) { ctx.toast(result.error || 'Could not schedule.'); return; }
+        ctx.toast('Queued for when Brain is open; publishing depends on automation settings.');
+      } else {
+        const result = await cancelQueueForDraft(ctx.store, draftId);
+        if (!result.ok) { ctx.toast(result.error || 'No schedule to clear.'); return; }
+        ctx.toast('Queue cancelled.');
+      }
+    } catch {
+      ctx.toast('Could not update the queue. Check device storage and try again.');
+    } finally { schedBtn.disabled = false; }
   });
   body.append(schedBtn);
   // Status / publish state hint
