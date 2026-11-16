@@ -13,6 +13,16 @@ let pendingVideoFile = null;
 
 function toastFn(ctx, msg) { if (ctx && ctx.toast) ctx.toast(msg); }
 
+// Backups and API responses are untrusted. Never create executable or
+// non-Instagram links from stored publication data. Leave records intact.
+function safeInstagramPermalink(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && !url.username && !url.password && (host === 'instagram.com' || host.endsWith('.instagram.com')) ? url.href : null;
+  } catch { return null; }
+}
+
 /** Entry: show Instagram hub */
 export function openInstagramHub(ctx) {
   const body = document.getElementById('sheetBody');
@@ -466,11 +476,12 @@ export async function openDraftEditor(ctx, draftId, fileOverride) {
 
   actions.append(saveBtn, previewPublishBtn, deleteBtn);
 
-  if (draft.status === 'published' && draft.permalink) {
-    const link = E.a({ href: draft.permalink, target: '_blank', rel: 'noopener noreferrer', class: 'ghost', style: 'display:block;text-align:center;text-decoration:none;margin-top:6px' }, 'View on Instagram ↗');
+  const draftLink = safeInstagramPermalink(draft.permalink);
+  if (draft.status === 'published' && draftLink) {
+    const link = E.a({ href: draftLink, target: '_blank', rel: 'noopener noreferrer', class: 'ghost', style: 'display:block;text-align:center;text-decoration:none;margin-top:6px' }, 'View on Instagram ↗');
     actions.append(link);
-  } else if (draft.permalink) {
-    actions.append(E.a({ href: draft.permalink, target: '_blank', rel: 'noopener noreferrer', class: 'ghost', style: 'display:block' }, 'Open link'));
+  } else if (draftLink) {
+    actions.append(E.a({ href: draftLink, target: '_blank', rel: 'noopener noreferrer', class: 'ghost', style: 'display:block' }, 'Open link'));
   }
 
   body.append(actions);
@@ -528,7 +539,8 @@ function openPublishConfirm(ctx, draftId, preview) {
       }
       progressEl.textContent = res.permalink ? `✅ Published! ${res.permalink}` : '✅ Published!';
       toastFn(ctx, 'Reel published!');
-      if (res.permalink) body.append(E.a({ href: res.permalink, target: '_blank', rel: 'noopener noreferrer', class: 'primary', style: 'display:block;text-align:center;margin-top:8px;text-decoration:none' }, 'View on Instagram ↗'));
+      const publishedLink = safeInstagramPermalink(res.permalink);
+      if (publishedLink) body.append(E.a({ href: publishedLink, target: '_blank', rel: 'noopener noreferrer', class: 'primary', style: 'display:block;text-align:center;margin-top:8px;text-decoration:none' }, 'View on Instagram ↗'));
       body.append(E.button({ class: 'ghost', type: 'button', onclick: () => openInstagramHub(ctx), style: 'margin-top:8px' }, 'Back to Instagram'));
       publishBtn.remove();
       cancelBtn.remove();
@@ -554,8 +566,9 @@ function renderPublishedHistory(ctx, parent) {
       E.div({ class: 'em' }, icon('check', { size: 16 })),
       E.div({ class: 'tx' }, E.b({}, pub.videoName || 'Reel'), E.small({}, `${new Date(pub.publishedAt).toLocaleDateString()} · ${pub.caption ? String(pub.caption).slice(0, 60) : ''}`))
     );
-    if (pub.permalink) {
-      const link = E.a({ href: pub.permalink, target: '_blank', rel: 'noopener noreferrer', class: 'mini', style: 'align-self:center' }, 'View');
+    const publishedLink = safeInstagramPermalink(pub.permalink);
+    if (publishedLink) {
+      const link = E.a({ href: publishedLink, target: '_blank', rel: 'noopener noreferrer', class: 'mini', style: 'align-self:center' }, 'View');
       row.append(link);
     }
     parent.append(row);

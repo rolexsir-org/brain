@@ -267,6 +267,81 @@ test('Instagram workspace renders an existing draft with its status icon', async
   await delay(30);
 });
 
+test('quick-add labels are associated and failed writes roll back without duplicate retries', async () => {
+  const { Store } = await import('../js/store/store.js');
+  const { openCreate } = await import('../js/ui/modules.js');
+  const store = new Store();
+  await store.init();
+  const before = store.list('task').length;
+  const messages = [];
+  openCreate({ store, toast: message => messages.push(message), afterMutate() {} }, 'task');
+  for (const label of $$('#sheetBody .field label')) assert.ok(label.control, `label ${label.textContent} has an associated field`);
+  $('#sheetBody input[type="text"]').value = 'Persist once';
+  const save = $('#sheetBody .primary');
+  const write = store.db.kvSet;
+  store.db.kvSet = async () => { await delay(20); throw new Error('quota'); };
+  save.click(); save.click();
+  await delay(80);
+  assert.equal(store.list('task').length, before, 'failed save is rolled back');
+  assert.ok(messages.some(message => /could not save/i.test(message)));
+  store.db.kvSet = write;
+  save.click(); save.click();
+  await delay(100);
+  assert.equal(store.list('task').length, before + 1, 'double click saves only once');
+  const record = store.list('task').find(task => task.title === 'Persist once');
+  await store.remove('task', record.id);
+});
+
+test('a pending quick-add save does not dismiss a newer sheet', async () => {
+  const { Store } = await import('../js/store/store.js');
+  const { openCreate } = await import('../js/ui/modules.js');
+  const store = new Store(); await store.init();
+  let release;
+  const original = store.db.kvSet.bind(store.db);
+  store.db.kvSet = async (...args) => { await new Promise(resolve => { release = resolve; }); return original(...args); };
+  openCreate({ store, toast() {}, afterMutate() {} }, 'task');
+  $('#sheetBody input[type="text"]').value = 'Slow save';
+  $('#sheetBody .primary').click();
+  await delay(20);
+  $('#sheetBody').textContent = 'A different sheet';
+  $('#sheetTitle').textContent = 'Different';
+  release(); await delay(60);
+  assert.equal($('#sheet').classList.contains('open'), true);
+  assert.equal($('#sheetTitle').textContent, 'Different');
+  store.db.kvSet = original;
+  const saved = store.list('task').find(task => task.title === 'Slow save');
+  await store.remove('task', saved.id);
+  $('#sheetClose').click(); await delay(30);
+});
+
+test('Instagram history does not link executable or foreign URLs', async () => {
+  const { Store } = await import('../js/store/store.js');
+  const { openInstagramHub } = await import('../js/instagram/ui.js');
+  const store = new Store(); await store.init();
+  const bad = await store.add('instagramPublication', { videoName: 'Unsafe link', permalink: 'javascript:alert(1)' });
+  const good = await store.add('instagramPublication', { videoName: 'Safe link', permalink: 'https://www.instagram.com/reel/example/' });
+  openInstagramHub({ store, toast() {} });
+  const rows = $$('#sheetBody .srow');
+  assert.equal(rows.find(row => row.textContent.includes('Unsafe link')).querySelector('a'), null);
+  assert.ok(rows.find(row => row.textContent.includes('Safe link')).querySelector('a'));
+  await store.remove('instagramPublication', bad.id); await store.remove('instagramPublication', good.id);
+  $('#sheetClose').click(); await delay(30);
+});
+
+test('dashboard recognizes persisted ISO habit dates', async () => {
+  const { Store } = await import('../js/store/store.js');
+  const { renderHome } = await import('../js/ui/dashboard.js');
+  const { todayKey } = await import('../js/util/util.js');
+  const store = new Store(); await store.init();
+  const habit = await store.add('habit', { name: 'Test habit', log: [todayKey()] });
+  const home = document.createElement('div');
+  renderHome({ store, go() {}, runAction() {}, toast() {} }, home);
+  const row = [...home.querySelectorAll('.habit-row')].find(item => item.textContent.includes('Test habit'));
+  assert.match(row.textContent, /Logged/);
+  assert.match(row.textContent, /1 day streak/);
+  await store.remove('habit', habit.id);
+});
+
 test('dashboard cards do not inherit sheet positioning', () => {
   const css = fs.readFileSync(path.join(ROOT, 'css/app.css'), 'utf8');
   assert.match(css, /\.sheet\s+\.panel\s*\{\s*position:\s*absolute/);

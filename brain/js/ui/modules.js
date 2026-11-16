@@ -99,9 +99,15 @@ function stateFor(kind) {
   return moduleState.get(kind);
 }
 
+let createFieldId = 0;
 function fieldWrap(labelText, input, note = '') {
-  const wrap = E.div({ class: 'field' }, E.label({}, labelText), input);
-  if (note) wrap.append(E.div({ class: 'fieldnote' }, note));
+  const id = input.id || `create-field-${++createFieldId}`;
+  input.id = id;
+  const wrap = E.div({ class: 'field' }, E.label({ for: id }, labelText), input);
+  if (note) {
+    input.setAttribute('aria-describedby', `${id}-note`);
+    wrap.append(E.div({ class: 'fieldnote', id: `${id}-note` }, note));
+  }
   return wrap;
 }
 
@@ -328,73 +334,81 @@ export function openCreate(ctx, kind) {
 
   const save = E.button({ class: 'primary', type: 'button' }, 'Save');
   save.addEventListener('click', async () => {
-    const payload = {};
-    if (kind === 'task') {
-      payload.title = inputs.title.value.trim();
-      if (!payload.title) { ctx.toast('Give the task a title.'); return; }
-      payload.note = inputs.note.value.trim();
-      payload.due = inputs.due.value ? new Date(inputs.due.value).toISOString() : null;
-      payload.status = 'open';
-    } else if (kind === 'reminder') {
-      payload.title = inputs.title.value.trim();
-      if (!payload.title) { ctx.toast('Give the reminder a title.'); return; }
-      const at = inputs.at.value ? new Date(inputs.at.value) : null;
-      if (!at || Number.isNaN(at.getTime())) { ctx.toast('Choose a date and time.'); return; }
-      payload.at = at.toISOString();
-      payload.status = 'active';
-    } else if (kind === 'note') {
-      payload.title = inputs.title.value.trim() || 'Note';
-      payload.body = inputs.body.value.trim();
-    } else if (kind === 'person') {
-      payload.name = inputs.name.value.trim();
-      payload.phone = inputs.phone.value.trim();
-      payload.email = inputs.email.value.trim();
-      if (!payload.name && !payload.phone && !payload.email) { ctx.toast('Add a name, phone or email.'); return; }
-    } else if (kind === 'money') {
-      payload.kind = inputs.kind.value;
-      payload.category = inputs.category.value.trim() || inputs.kind.value;
-      payload.amount = inputs.amount.value === '' ? null : Number(inputs.amount.value);
-      if (payload.amount == null || !Number.isFinite(payload.amount) || payload.amount < 0) { ctx.toast('Enter a valid amount.'); return; }
-      payload.date = inputs.date.value ? new Date(inputs.date.value).toISOString() : new Date().toISOString();
-    } else if (kind === 'debt') {
-      payload.person = inputs.person.value.trim() || 'Person';
-      payload.dir = inputs.dir.value;
-      payload.amount = inputs.amount.value === '' ? null : Number(inputs.amount.value);
-      if (payload.amount == null || !Number.isFinite(payload.amount) || payload.amount < 0) { ctx.toast('Enter a valid amount.'); return; }
-      payload.status = 'open';
-    } else if (kind === 'stockItem') {
-      payload.name = inputs.name.value.trim();
-      if (!payload.name) { ctx.toast('Name the item.'); return; }
-      payload.qty = inputs.qty.value === '' ? 0 : Number(inputs.qty.value);
-      payload.unit = inputs.unit.value.trim();
-      payload.lowThreshold = inputs.lowThreshold.value === '' ? null : Number(inputs.lowThreshold.value);
-      if (!Number.isFinite(payload.qty) || payload.qty < 0) { ctx.toast('Enter a valid quantity.'); return; }
-      if (payload.lowThreshold != null && (!Number.isFinite(payload.lowThreshold) || payload.lowThreshold < 0)) { ctx.toast('Enter a valid low-stock threshold.'); return; }
-    } else if (kind === 'habit') {
-      payload.name = inputs.name.value.trim();
-      if (!payload.name) { ctx.toast('Name the habit.'); return; }
-      payload.log = [];
-    } else if (kind === 'journal') {
-      payload.text = inputs.text.value.trim();
-      payload.mood = inputs.mood.value;
-      payload.date = inputs.date.value ? new Date(inputs.date.value).toISOString() : new Date().toISOString();
-    } else if (kind === 'event') {
-      payload.title = inputs.title.value.trim();
-      if (!payload.title) { ctx.toast('Give the event a title.'); return; }
-      payload.at = inputs.at.value ? new Date(inputs.at.value).toISOString() : null;
-      payload.end = inputs.end.value ? new Date(inputs.end.value).toISOString() : null;
-      payload.location = inputs.location.value.trim();
-      payload.allDay = false;
-      if (payload.at && payload.end && new Date(payload.end) < new Date(payload.at)) { ctx.toast('End time cannot be before the start time.'); return; }
-    }
+    if (save.disabled) return;
+    save.disabled = true;
+    try {
+      const payload = {};
+      if (kind === 'task') {
+        payload.title = inputs.title.value.trim();
+        if (!payload.title) { ctx.toast('Give the task a title.'); return; }
+        payload.note = inputs.note.value.trim();
+        payload.due = inputs.due.value ? new Date(inputs.due.value).toISOString() : null;
+        payload.status = 'open';
+      } else if (kind === 'reminder') {
+        payload.title = inputs.title.value.trim();
+        if (!payload.title) { ctx.toast('Give the reminder a title.'); return; }
+        const at = inputs.at.value ? new Date(inputs.at.value) : null;
+        if (!at || Number.isNaN(at.getTime())) { ctx.toast('Choose a date and time.'); return; }
+        payload.at = at.toISOString();
+        payload.status = 'active';
+      } else if (kind === 'note') {
+        payload.title = inputs.title.value.trim() || 'Note';
+        payload.body = inputs.body.value.trim();
+      } else if (kind === 'person') {
+        payload.name = inputs.name.value.trim();
+        payload.phone = inputs.phone.value.trim();
+        payload.email = inputs.email.value.trim();
+        if (!payload.name && !payload.phone && !payload.email) { ctx.toast('Add a name, phone or email.'); return; }
+      } else if (kind === 'money') {
+        payload.kind = inputs.kind.value;
+        payload.category = inputs.category.value.trim() || inputs.kind.value;
+        payload.amount = inputs.amount.value === '' ? null : Number(inputs.amount.value);
+        if (payload.amount == null || !Number.isFinite(payload.amount) || payload.amount < 0) { ctx.toast('Enter a valid amount.'); return; }
+        payload.date = inputs.date.value ? new Date(inputs.date.value).toISOString() : new Date().toISOString();
+      } else if (kind === 'debt') {
+        payload.person = inputs.person.value.trim() || 'Person';
+        payload.dir = inputs.dir.value;
+        payload.amount = inputs.amount.value === '' ? null : Number(inputs.amount.value);
+        if (payload.amount == null || !Number.isFinite(payload.amount) || payload.amount < 0) { ctx.toast('Enter a valid amount.'); return; }
+        payload.status = 'open';
+      } else if (kind === 'stockItem') {
+        payload.name = inputs.name.value.trim();
+        if (!payload.name) { ctx.toast('Name the item.'); return; }
+        payload.qty = inputs.qty.value === '' ? 0 : Number(inputs.qty.value);
+        payload.unit = inputs.unit.value.trim();
+        payload.lowThreshold = inputs.lowThreshold.value === '' ? null : Number(inputs.lowThreshold.value);
+        if (!Number.isFinite(payload.qty) || payload.qty < 0) { ctx.toast('Enter a valid quantity.'); return; }
+        if (payload.lowThreshold != null && (!Number.isFinite(payload.lowThreshold) || payload.lowThreshold < 0)) { ctx.toast('Enter a valid low-stock threshold.'); return; }
+      } else if (kind === 'habit') {
+        payload.name = inputs.name.value.trim();
+        if (!payload.name) { ctx.toast('Name the habit.'); return; }
+        payload.log = [];
+      } else if (kind === 'journal') {
+        payload.text = inputs.text.value.trim();
+        payload.mood = inputs.mood.value;
+        payload.date = inputs.date.value ? new Date(inputs.date.value).toISOString() : new Date().toISOString();
+      } else if (kind === 'event') {
+        payload.title = inputs.title.value.trim();
+        if (!payload.title) { ctx.toast('Give the event a title.'); return; }
+        payload.at = inputs.at.value ? new Date(inputs.at.value).toISOString() : null;
+        payload.end = inputs.end.value ? new Date(inputs.end.value).toISOString() : null;
+        payload.location = inputs.location.value.trim();
+        payload.allDay = false;
+        if (payload.at && payload.end && new Date(payload.end) < new Date(payload.at)) { ctx.toast('End time cannot be before the start time.'); return; }
+      }
 
-    const record = ctx.store.addSync(kind, payload);
-    if (!record) { ctx.toast('Could not save that. Device storage may be full.'); return; }
-    const flushed = await ctx.store.flush();
-    if (!flushed.ok) { ctx.toast('Could not save that. Check device storage and try again.'); return; }
-    closePanel();
-    if (ctx.afterMutate) ctx.afterMutate();
-    ctx.toast('Saved.');
+      const record = await ctx.store.add(kind, payload);
+      if (!record) { ctx.toast('Could not save that. Check device storage and try again.'); return; }
+      // The user may have dismissed this form and opened a different sheet
+      // while storage was pending. Never close that newer sheet.
+      if (body.contains(save)) closePanel();
+      if (ctx.afterMutate) ctx.afterMutate();
+      ctx.toast('Saved.');
+    } catch {
+      ctx.toast('Could not save that. Check the input and device storage, then try again.');
+    } finally {
+      save.disabled = false;
+    }
   });
 
   body.append(save, E.button({ class: 'ghost', type: 'button', onclick: () => closePanel() }, 'Cancel'));
