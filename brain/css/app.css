@@ -804,7 +804,7 @@ select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   display: grid; place-items: center; color: #fff;
   background: var(--accent-gradient); box-shadow: var(--sh-accent);
 }
-.row.user .avatar { background: var(--surface-3); color: var(--ink-2); box-shadow: none; }
+.row.user .avatar { background: var(--surface-3); color: var(--ink-2); box-shadow: none; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; }
 .row > div:last-child { min-width: 0; }
 .bubble {
   max-width: min(84%, 560px);

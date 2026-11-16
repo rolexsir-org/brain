@@ -171,7 +171,7 @@ function renderAll() {
 function renderBlock(block) {
   const row = E.div({ class: `row ${block.role === 'user' ? 'user' : `bot ${block.kind === 'brief' ? 'brief' : ''}`}`.trim() });
   const content = E.div({ style: 'min-width:0' });
-  if (block.role === 'bot') row.append(E.div({ class: 'avatar', 'aria-hidden': 'true' }, block.kind === 'brief' ? '☀️' : '🧠'));
+  row.append(E.div({ class: 'avatar', 'aria-hidden': 'true' }, block.role === 'user' ? 'You' : icon(block.kind === 'brief' ? 'sparkles' : 'brain', { size: 16, strokeWidth: 1.8 })));
   if (block.text) content.append(E.div({ class: 'bubble' }, block.text));
   if (block.cards && block.cards.length) {
     const cards = E.div({ class: 'cards' });
@@ -228,7 +228,7 @@ let typingNode = null;
 function showTyping() {
   const chat = $('#chat');
   const row = E.div({ class: 'row bot typing', 'aria-label': 'Brain is thinking' });
-  row.append(E.div({ class: 'avatar', 'aria-hidden': 'true' }, '🧠'));
+  row.append(E.div({ class: 'avatar', 'aria-hidden': 'true' }, icon('brain', { size: 16, strokeWidth: 1.8 })));
   row.append(E.div({ class: 'bubble' }, E.i(), E.i(), E.i()));
   chat.append(row);
   typingNode = row;
