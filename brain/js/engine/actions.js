@@ -2,7 +2,7 @@
 // both use these helpers so natural-language and button flows mutate identical
 // records.
 
-import { toDate, cleanName, formatMoney, moneyToken, nowISO, todayKey } from '../util/util.js';
+import { toDate, cleanName, formatMoney, moneyToken, nowISO, todayKey, habitDayKey } from '../util/util.js';
 import * as D from '../util/date.js';
 
 export function fmtMoney(value, currency, locale) { return formatMoney(value, { currency, locale }); }
@@ -169,7 +169,7 @@ export function logHabit(store, name) {
   let habit = store.list('habit').find(record => record.name.toLowerCase() === String(name).toLowerCase());
   const key = todayKey();
   if (habit) {
-    if ((habit.log || []).includes(key)) return { id: habit.id, kind: 'habit', text: `${habit.name} already logged today.`, rec: habit };
+    if ((habit.log || []).some(value => habitDayKey(value) === key)) return { id: habit.id, kind: 'habit', text: `${habit.name} already logged today.`, rec: habit };
     habit = store.updateSync('habit', habit.id, { log: [...(habit.log || []), key] });
   } else habit = store.addSync('habit', { name: cleanName(name), schedule: { freq: 'daily', interval: 1 }, log: [key] });
   if (!habit) return created(null, 'habit');
@@ -177,7 +177,7 @@ export function logHabit(store, name) {
 }
 
 export function streakOf(log = []) {
-  const set = new Set(log);
+  const set = new Set(log.map(habitDayKey));
   const day = new Date();
   let count = 0;
   while (set.has(todayKey(day))) { count += 1; day.setDate(day.getDate() - 1); }

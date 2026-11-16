@@ -5,7 +5,7 @@
 import { Store, previewImport, MAX_BACKUP_CHARS, V } from './store/store.js';
 import { Brain } from './engine/intent.js';
 import * as Domain from './engine/actions.js';
-import { nodes as E, todayKey } from './util/util.js';
+import { nodes as E, todayKey, habitDayKey } from './util/util.js';
 import { nextOccurrence } from './util/date.js';
 import { entityCard } from './ui/cards.js';
 import { icon, iconForKind, NAV_ITEMS } from './ui/icons.js';
@@ -1089,7 +1089,7 @@ async function logHabit(id) {
   const habit = store.get('habit', id);
   if (!habit) return { ok: false };
   const key = todayKey();
-  const alreadyLogged = (habit.log || []).includes(key);
+  const alreadyLogged = (habit.log || []).some(value => habitDayKey(value) === key);
   if (alreadyLogged) { toast('Already logged today.'); return { ok: true, already: true }; }
   const log = [...new Set([...(habit.log || []), key])];
   const saved = await store.update('habit', id, { log });

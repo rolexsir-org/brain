@@ -2,7 +2,7 @@
 // No demonstration metrics: every number and row is derived from records the
 // user actually created, and empty states replace invented content.
 
-import { nodes as E, todayKey, formatMoney } from '../util/util.js';
+import { nodes as E, todayKey, formatMoney, habitDayKey } from '../util/util.js';
 import { fmtHM } from '../util/date.js';
 import { ACTION } from '../actions/system.js';
 import { icon, iconForKind } from './icons.js';
@@ -104,7 +104,7 @@ export function renderHome(ctx, container) {
     setTimeout(() => { const input = document.querySelector('#in'); if (input) input.focus(); }, 30);
   });
   if (!name) {
-    pad.append(E.div({ class: 'banner' }, 'Welcome to Brain. Open the Assistant and tell me your name — everything you add stays private on this device.'));
+    pad.append(E.div({ class: 'banner' }, 'Welcome to Brain. Open the Assistant and tell me your name — your data is stored on this device.'));
   }
   pad.append(hero);
 
@@ -114,7 +114,7 @@ export function renderHome(ctx, container) {
   const overdueTasks = openTasks.filter(task => task.due && isOverdue(task.due));
   const activeReminders = store.list('reminder').filter(reminder => reminder.status === 'active');
   const habits = store.list('habit');
-  const habitsLoggedToday = habits.filter(habit => (habit.log || []).includes(today)).length;
+  const habitsLoggedToday = habits.filter(habit => (habit.log || []).some(value => habitDayKey(value) === today)).length;
 
   const month = now.getMonth();
   const year = now.getFullYear();
@@ -216,7 +216,7 @@ export function renderHome(ctx, container) {
     habitList.append(emptyState('habit', 'No habits yet', 'Create a habit in Brain and log it daily to build a streak.'));
   } else {
     for (const habit of habits.slice(0, 6)) {
-      const logged = (habit.log || []).includes(today);
+      const logged = (habit.log || []).some(value => habitDayKey(value) === today);
       const row = E.div({ class: 'habit-row' },
         E.span({ class: 'habit-name' }, habit.name || 'Habit'),
         E.span({ class: 'habit-streak' }, `${streakOf(habit.log)} day streak`),
@@ -287,7 +287,7 @@ export function renderHome(ctx, container) {
 }
 
 function streakOf(log) {
-  const set = new Set(log || []);
+  const set = new Set((log || []).map(habitDayKey));
   const day = new Date();
   let count = 0;
   while (set.has(todayKey(day))) { count += 1; day.setDate(day.getDate() - 1); }
