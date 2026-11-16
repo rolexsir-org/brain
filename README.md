@@ -158,7 +158,7 @@ your tap.
 | **WhatsApp** | Opens an official `wa.me` conversation link when a usable international number is known, or WhatsApp’s official share route when only text is available. | It cannot pick a recipient automatically, attach/send a message itself, or read WhatsApp. |
 | **Maps and directions** | Opens a Maps search/directions handoff for a saved address, supplied place, or approved current coordinates. | It does not track location in the background. |
 | **Current location** | Requests foreground browser location permission only after you tap the action, then opens the location in Maps. | It does not continuously collect or retain location. |
-| **Instagram** | Opens a saved public profile URL. “Share to Instagram” uses the system share sheet when the device offers it. | It cannot log in, upload, post, publish, schedule, or automate Instagram. |
+| **Instagram** | Opens public profiles and provides an Instagram Business workspace for local drafts and, when configured and authorized, publishing and scheduling via Meta. | Publishing requires a compatible account, configuration, network access and the relevant approvals; availability and success depend on Meta and the deployment. |
 | **Share / copy** | Uses the native Web Share sheet when available. Otherwise it uses a real clipboard fallback for text, and a save/download fallback for files. | It does not claim a target app received shared data. |
 | **Calendar** | Builds and saves/downloads an RFC 5545 `.ics` event file for the user to open/import in a calendar app. | Browsers cannot silently add an event to a calendar. |
 | **Contacts import** | Uses the read-only Web Contacts Picker where exposed and only after your tap; selected contact data is copied into Brain. | It cannot write to your system address book or import without permission. |
@@ -275,8 +275,7 @@ an action rather than claiming it completed it.
 
 - Brain does not send stored data to a Brain backend because there is no Brain
   backend.
-- Your data may leave the device only when you explicitly choose an external
-  action or manually move a backup file.
+- Exports and external actions can send or expose data outside the device. If Instagram publishing or automation is configured and enabled, queued actions may also communicate with Meta while Brain is running. Review the integration and automation settings before enabling them.
 - The destination app/site’s privacy policy applies after a handoff (for
   example, WhatsApp, your mail client, Google Maps, or Instagram).
 - Site data is local to a browser profile; it is not automatically synced
