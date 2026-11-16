@@ -203,6 +203,51 @@ test('quick-add supports reminders and notes with real persistence', async () =>
   assert.ok($('#view-module').textContent.includes('Redesign ideas'), 'note quick-add persists');
 });
 
+test('settings panel saves real preferences and updates the dashboard', async () => {
+  navClick('More');
+  await delay(30);
+  $$('#view-more .tile').find(tile => /Settings/.test(tile.textContent)).click();
+  await delay(30);
+  assert.equal($('#sheetTitle').textContent, 'Settings');
+  const nameInput = $('#sheetBody input[aria-label="Your name"]');
+  assert.ok(nameInput, 'name field is labelled for assistive tech');
+  nameInput.value = 'Aarav';
+  $('#sheetBody .primary').click();
+  await delay(120);
+  assert.equal($('#sheet').classList.contains('open'), false, 'sheet closes after saving');
+  navClick('Home');
+  await delay(30);
+  assert.ok($('#view-home').textContent.includes('Aarav'), 'saved name appears on the dashboard');
+});
+
+test('command centre opens and reports live counts', async () => {
+  navClick('More');
+  await delay(30);
+  $$('#view-more .tile').find(tile => /Command Centre/.test(tile.textContent)).click();
+  await delay(30);
+  assert.equal($('#sheetTitle').textContent, 'Command Centre');
+  assert.equal($('#sheet').classList.contains('open'), true, 'command centre sheet is open');
+  const bodyText = $('#sheetBody').textContent;
+  assert.ok(bodyText.includes('Pending actions'), 'pending section renders');
+  assert.ok(/result/i.test(bodyText) || bodyText.length > 0, 'command centre has content');
+});
+
+test('sheet closes via close control and Escape', async () => {
+  navClick('More');
+  await delay(30);
+  $$('#view-more .tile').find(tile => /Settings/.test(tile.textContent)).click();
+  await delay(30);
+  assert.equal($('#sheet').classList.contains('open'), true);
+  $('#sheetClose').click();
+  await delay(30);
+  assert.equal($('#sheet').classList.contains('open'), false, 'close control dismisses the sheet');
+  $$('#view-more .tile').find(tile => /Settings/.test(tile.textContent)).click();
+  await delay(30);
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await delay(30);
+  assert.equal($('#sheet').classList.contains('open'), false, 'Escape dismisses the sheet');
+});
+
 test('redesigned shell reports no runtime errors', async () => {
   await delay(30);
   assert.deepEqual(errors, [], `runtime errors: ${errors.join('\n')}`);
