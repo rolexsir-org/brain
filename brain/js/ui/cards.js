@@ -2,10 +2,11 @@
 // emits a request into Brain's universal action dispatcher. That keeps chat,
 // notification actions, menu actions, and cards consistent and testable.
 
-import { nodes as E, formatMoney, todayKey } from '../util/util.js';
+import { nodes as E, formatMoney, todayKey, habitDayKey } from '../util/util.js';
 import { fmtHM } from '../util/date.js';
 import { availableActions, ACTION } from '../actions/system.js';
 import { isSafeImageDataUrl } from '../store/validate.js';
+import { icon, iconForKind } from './icons.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -60,7 +61,7 @@ export function entityCard(ctx, kind, id) {
   const record = ctx.store.list(kind).find(item => item.id === id);
   if (!record) return null;
   const card = E.div({ class: 'card', dataset: { cid: id } });
-  const heading = E.div({ class: 'k' }, E.span({}, kindIcon(kind)), E.span({}, kind.replace(/([A-Z])/g, ' $1').toUpperCase()));
+  const heading = E.div({ class: 'k' }, E.span({ class: 'kicon' }, icon(iconForKind(kind), { size: 13 })), E.span({}, kind.replace(/([A-Z])/g, ' $1').toUpperCase()));
   const meta = E.div({ class: 'meta' });
   const actions = E.div({ class: 'act' });
   card.append(heading);
@@ -183,7 +184,7 @@ function recurrenceText(recur) {
 }
 
 function streak(log) {
-  const set = new Set(log || []);
+  const set = new Set((log || []).map(habitDayKey));
   const day = new Date();
   let count = 0;
   while (set.has(todayKey(day))) { count += 1; day.setDate(day.getDate() - 1); }

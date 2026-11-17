@@ -45,19 +45,27 @@ export async function enqueue(store, draftId, opts={}) {
   if (existing) return { ok:false, error:'Already in publishing queue' };
 
   const entry = makeQueueEntry(draftId, opts);
-  // Atomic: append then verify no duplicate slipped in (single transaction via kvSetMany)
+  // Best-effort duplicate check; this read/write sequence is not a cross-tab lock.
   queue.push(entry);
   await saveQueue(store, queue);
   // Re-read to detect race
   const verify = await getQueue(store);
   const dupCount = verify.filter(q=> q.draftId===draftId && ['SCHEDULED','UPLOADING','PROCESSING','CLAIMED'].includes(q.status)).length;
+  if (!verify.some(q => q.id === entry.id)) return { ok:false, error:'Queue changed before the schedule could be verified. Please retry.' };
   if (dupCount > 1) {
     // rollback last
     const pruned = verify.filter((q,i)=> !(q.draftId===draftId && q.id===entry.id && i!== verify.findIndex(x=> x.draftId===draftId)));
     await saveQueue(store, pruned);
     return { ok:false, error:'Duplicate detected — job already claimed' };
   }
-  if (s !== STATES.SCHEDULED) await store.update('instagramDraft', draftId, { status: STATES.SCHEDULED, scheduledAt: entry.scheduledAt, history: [...(draft.history||[]), { at: nowISO(), action:'queued', fromStatus:s, actor: opts.actor||'user' }].slice(-100) });
+  const updated = await store.update('instagramDraft', draftId, { status: STATES.SCHEDULED, scheduledAt: entry.scheduledAt, history: [...(draft.history||[]), { at: nowISO(), action:'queued', fromStatus:s, actor: opts.actor||'user' }].slice(-100) });
+  if (!updated) {
+    // Do not report success when the draft transition failed. Roll back only
+    // our entry, preserving any other queue entries created in the meantime.
+    const current = await getQueue(store);
+    await saveQueue(store, current.filter(item => item.id !== entry.id));
+    return { ok:false, error:'Could not save the draft schedule.' };
+  }
   return { ok:true, entry };
 }
 
@@ -92,17 +100,16 @@ export async function cancelQueueForDraft(store, draftId) {
 }
 
 export async function getQueue(store) {
-  try {
-    const raw = await store.db.kvGet(QUEUE_KEY);
-    if (!raw || !Array.isArray(raw.entries)) return [];
-    return raw.entries;
-  } catch { return []; }
+  const raw = await store.db.kvGet(QUEUE_KEY);
+  if (raw == null) return [];
+  if (!raw || !Array.isArray(raw.entries)) throw new Error('Publishing queue data is invalid');
+  // Backends may return object references; edits must not modify storage before
+  // the write succeeds (or a failed write can appear successful in memory).
+  return raw.entries.map(entry => ({ ...entry }));
 }
 
 export async function saveQueue(store, entries) {
-  try {
-    await store.db.kvSet(QUEUE_KEY, { version: STORE_VERSION, entries: entries.slice(0,200), updatedAt: nowISO() });
-  } catch {}
+  await store.db.kvSet(QUEUE_KEY, { version: STORE_VERSION, entries: entries.slice(0,200), updatedAt: nowISO() });
 }
 
 export async function getPendingQueue(store) {
@@ -119,7 +126,7 @@ export async function getPendingQueue(store) {
 // Fencing token + renewable lease: prevents stale worker from committing
 function generateFencingToken(){ try { const b=new Uint8Array(16); crypto.getRandomValues(b); return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''); } catch { return Math.random().toString(36).slice(2)+Date.now().toString(36); } }
 
-// Atomic job claiming: CLAIMED prevents concurrent workers; returns {entry, leaseToken}
+// Best-effort claim; the separate read/write operations are not an atomic cross-tab lock.
 export async function claimJob(store, entryId) {
   const queue = await getQueue(store);
   const idx = queue.findIndex(q=> q.id===entryId);
@@ -184,7 +191,7 @@ export async function recoverStaleJobs(store) {
   return recovered;
 }
 
-// Process queue — atomic, with rate-limit-aware scheduling, jitter, and emergency stop
+// Process the local queue with rate-limit-aware scheduling, jitter, and emergency stop.
 export async function processQueue(store, connection, { onPublish } = {}) {
   if (EMERGENCY_STOP) return { ok:true, processed:0, stopped:true };
   await recoverStaleJobs(store);
@@ -250,8 +257,14 @@ export async function processQueue(store, connection, { onPublish } = {}) {
     }
 
     // Mark attempt persistent before network (prevents blind repeat after timeout)
-    const attemptEntry = (await getQueue(store)).find(q=> q.id===entry.id);
-    if (attemptEntry) { attemptEntry.attempts=(attemptEntry.attempts||0)+1; attemptEntry.updatedAt=nowISO(); await saveQueue(store, await getQueue(store)); }
+    if (onPublish) {
+      const attemptsQueue = await getQueue(store);
+      const attemptEntry = attemptsQueue.find(q => q.id === entry.id);
+      if (!attemptEntry || attemptEntry.status !== 'CLAIMED' || attemptEntry.leaseToken !== leaseToken) continue;
+      attemptEntry.attempts = (attemptEntry.attempts || 0) + 1;
+      attemptEntry.updatedAt = nowISO();
+      await saveQueue(store, attemptsQueue);
+    }
 
     // Determine if Meta accepted before blind repeat: we rely on executePublish to return ok only if mediaId exists; ambiguous timeout is treated as transient and will retry with check before retry
     if (onPublish) {

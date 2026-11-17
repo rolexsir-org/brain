@@ -215,7 +215,7 @@ if (await openMenuItem(/Instagram/)) {
 // entry (no stacked duplicates).
 const pushes = [];
 const realPush = window.history.pushState.bind(window.history);
-window.history.pushState = (...args) => { pushes.push(args[1] && args[1].brainSheet); return realPush(...args); };
+window.history.pushState = (...args) => { pushes.push(args[0] && args[0].brainSheet); return realPush(...args); };
 if (await openMenuItem(/Command Centre/)) {
   assert(pushes.filter(Boolean).length === 1, 'opening a panel adds exactly one history entry');
   window.dispatchEvent(new window.Event('popstate'));

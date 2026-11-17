@@ -147,3 +147,14 @@ test('wipe clears everything', async () => {
   await store.wipe();
   assert.equal(store.list('task').length, 0);
 });
+
+ test('habit logs remain accurate after ISO normalization and reload', async () => {
+  const { logHabit, streakOf } = await import('../js/engine/actions.js');
+  const { todayKey } = await import('../js/util/util.js');
+  const habit = await store.add('habit', { name: 'Read', log: [todayKey()] });
+  assert.equal(streakOf(habit.log), 1);
+  const reloaded = new Store(); await reloaded.init();
+  const result = logHabit(reloaded, 'Read');
+  assert.match(result.text, /already logged/i);
+  assert.equal(reloaded.get('habit', habit.id).log.length, 1);
+});

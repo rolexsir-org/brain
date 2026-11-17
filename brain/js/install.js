@@ -27,12 +27,12 @@ export async function registerSw(onUpdate) {
             if (typeof onUpdate==='function') onUpdate(reg);
             else {
               const banner=document.createElement('div');
+              banner.className='sw-update';
               banner.setAttribute('role','alert');
-              banner.style.cssText='position:fixed;bottom:16px;left:12px;right:12px;background:#0e131f;color:#fff;padding:10px 12px;border-radius:8px;z-index:9999;display:flex;gap:8px;align-items:center;justify-content:space-between;';
               const msg=document.createElement('span'); msg.textContent='Update available — new Brain version ready.';
-              const btn=document.createElement('button'); btn.textContent='Reload'; btn.style.cssText='background:#3ecf8e;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;color:#000;font-weight:600';
+              const btn=document.createElement('button'); btn.className='sw-reload'; btn.textContent='Reload';
               btn.addEventListener('click', ()=> window.location.reload());
-              const dismiss=document.createElement('button'); dismiss.textContent='Later'; dismiss.style.cssText='background:transparent;border:1px solid #fff;color:#fff;padding:6px 10px;border-radius:6px;cursor:pointer';
+              const dismiss=document.createElement('button'); dismiss.className='sw-later'; dismiss.textContent='Later';
               dismiss.addEventListener('click', ()=> banner.remove());
               banner.append(msg, btn, dismiss);
               document.body.append(banner);
@@ -61,27 +61,24 @@ function showIosHelp(trigger) {
   if (existing) { existing.querySelector('button')?.focus(); return; }
   const overlay = document.createElement('div');
   overlay.id = 'brain-ios-install-help';
+  overlay.className = 'ios-help';
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
   overlay.setAttribute('aria-labelledby', 'brain-ios-install-title');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(4,8,16,.72);display:flex;align-items:flex-end;justify-content:center;z-index:10000;padding:16px;';
 
   const panel = document.createElement('div');
-  panel.style.cssText = 'background:#0e131f;color:#e9edf4;border:1px solid #26304a;border-radius:14px;padding:16px;max-width:420px;width:100%;line-height:1.5;';
+  panel.className = 'ios-help-panel';
 
   const title = document.createElement('h2');
   title.id = 'brain-ios-install-title';
   title.textContent = 'Add Brain to your Home Screen';
-  title.style.cssText = 'margin:0 0 8px;font-size:17px;';
 
   const body = document.createElement('p');
-  body.style.cssText = 'margin:0 0 14px;font-size:14px;color:#c8d0e0;';
   body.textContent = 'In Safari, tap the Share button, then choose “Add to Home Screen”. In Chrome on iOS the same option lives in the Share menu.';
 
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = 'Got it';
-  close.style.cssText = 'background:#3ecf8e;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;color:#000;font-weight:600;';
 
   const dismiss = () => {
     document.removeEventListener('keydown', onKeydown, true);

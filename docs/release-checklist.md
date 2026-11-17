@@ -1,18 +1,15 @@
-# Release Checklist — Brain v2.3.0 (S)
+# Release checklist — Brain 2.5.0
 
-**Criteria:** all must pass.
+All checks must pass before deployment; record the environment and evidence for each.
 
-- [ ] `npm test` — 123 unit + UI smoke pass, security tests pass
-- [ ] `npm run build` — 40 assets verified, SW precache complete
-- [ ] `npm audit` — 0 high/critical (allow low for dev deps, document)
-- [ ] Secret scan — `grep -r APP_SECRET|PRIVATE_KEY|TOKEN` finds only docs/examples, no real secret
-- [ ] License check — runtime has 0 bundled deps (only dev: fake-indexeddb MIT, jsdom MIT) — `npx license-checker --production` confirms
-- [ ] Accessibility — `npm run test:ui` asserts modal, aria, focus trap pass; manual Lighthouse a11y ≥95
-- [ ] Manual: PWA install, offline reload, reminder, Instagram connect (test user), publish with explicit tap
-- [ ] Manual: backup export (plain+encrypted), import on clean profile, verify counts
-- [ ] Manual: storage full simulation (fill quota, expect warning, no data loss)
-- [ ] Diagnostics panel shows correct versions, no token leak in copy
+- [ ] Run `npm test`, `npm run build`, and `npm run audit` in `brain/`; retain the logs.
+- [ ] Run `npm audit` for dependency vulnerabilities and review any findings.
+- [ ] Review the shipped assets for secrets and verify dependency licences.
+- [ ] Manually check keyboard and screen-reader access, focus management, contrast and reduced motion in both themes, including at mobile and desktop sizes.
+- [ ] Test PWA install and offline reload on supported browsers and devices; verify reminders and their documented browser limitations.
+- [ ] Export plain and encrypted backups, restore in a clean profile, and compare records and settings.
+- [ ] Test storage failure handling and confirm existing data is retained.
+- [ ] Verify diagnostics version and redacted output; check Instagram with a test account and only publish after explicit confirmation.
+- [ ] Verify the service-worker upgrade and rollback paths in a deployed environment.
 
-**Evidence:** attach `npm test` log, `npm run build` log, audit log.
-
-**Blockers:** any fail = do not release.
+Automated checks alone are not a certification of manual device, accessibility or integration checks. Do not release with outstanding failures.

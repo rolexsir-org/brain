@@ -89,6 +89,12 @@ export function todayKey(d = new Date()) {
   return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
 }
 
+// Habit log dates may be stored as either YYYY-MM-DD or normalized ISO midnight.
+// Interpret the calendar date as written, not as a local-time instant.
+export function habitDayKey(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value) ? value.slice(0, 10) : '';
+}
+
 export function nowISO() { return new Date().toISOString(); }
 
 /** Bounded string to guard against absurdly long inputs. */
